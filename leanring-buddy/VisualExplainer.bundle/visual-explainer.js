@@ -26,7 +26,11 @@
     pipes), rect (size [w,h]), circle (radius), ring (innerRadius, outerRadius),
     line (points [[x,y,z], ...], width; straight segments, for graphs, axes,
     timelines; "drawn": false starts it invisible so "draw" can trace it),
-    card (title, text, width in pixels; an HTML text box anchored at position).
+    card (title, text, width in pixels; an HTML text box anchored at position),
+    gear (radius, teeth, thickness, innerRadius, holeRadius; faces +z),
+    capsule (radius, height; rounded ends), spring (radius, height, coils, wireRadius).
+  Optional top-level "quiz": [{ "question", "choices": [...], "answerIndex", "explanation" }]
+  is offered after the last step (and by the Quiz button).
 
   Actions (a "targets" field takes one id or a list of ids):
     show / hide          { "do": "show", "targets": ["tank"] }
@@ -61,9 +65,14 @@
     heySonaExplainer.finishSteps()                 no more steps will come
     heySonaExplainer.goToStep(index)
     heySonaExplainer.play() / .pause()
+    heySonaExplainer.setQuiz([...]) / .showQuiz() / .showLibrary([{ id, title, detail }])
+    heySonaExplainer.continueScene()               follow-up steps are about to be appended
+    heySonaExplainer.markFinished()                narration finished (offers the quiz)
   Messages to Swift (window.webkit.messageHandlers.heySona):
     { type: "ready" } | { type: "stepStarted", index, narration } | { type: "finished" }
     { type: "close" } | { type: "playPauseRequested", isPlaying } | { type: "error", message }
+    { type: "libraryRequested" } | { type: "libraryEntrySelected", id } | { type: "libraryEntryDeleted", id }
+    { type: "quizFinished", correctCount, questionCount }
 */
 
 (function () {
@@ -248,6 +257,54 @@
         }
         const lineWidth = Number(objectDescription.width) || 0.06;
         return new THREE.TubeGeometry(linePath, Math.max(32, linePoints.length * 6), lineWidth / 2, 8, false);
+      }
+      case 'gear': {
+        // A flat gear with real teeth, extruded to "thickness", facing +z.
+        const toothCount = Math.max(6, Math.min(60, Math.round(Number(objectDescription.teeth) || 12)));
+        const outerRadius = radius;
+        const rootRadius = Number(objectDescription.innerRadius) || outerRadius * 0.8;
+        const holeRadius = Number(objectDescription.holeRadius) || outerRadius * 0.22;
+        const gearOutline = new THREE.Shape();
+        for (let toothIndex = 0; toothIndex < toothCount; toothIndex++) {
+          const toothAngle = (toothIndex / toothCount) * Math.PI * 2;
+          const quarterPitch = (Math.PI * 2 / toothCount) / 4;
+          // root → flank up → tooth top → flank down, for each tooth
+          const outlineAngles = [
+            [toothAngle - quarterPitch * 1.6, rootRadius],
+            [toothAngle - quarterPitch * 0.7, outerRadius],
+            [toothAngle + quarterPitch * 0.7, outerRadius],
+            [toothAngle + quarterPitch * 1.6, rootRadius],
+          ];
+          outlineAngles.forEach(([pointAngle, pointRadius], pointIndex) => {
+            const pointX = Math.cos(pointAngle) * pointRadius;
+            const pointY = Math.sin(pointAngle) * pointRadius;
+            if (toothIndex === 0 && pointIndex === 0) gearOutline.moveTo(pointX, pointY);
+            else gearOutline.lineTo(pointX, pointY);
+          });
+        }
+        gearOutline.closePath();
+        const centerHole = new THREE.Path();
+        centerHole.absarc(0, 0, holeRadius, 0, Math.PI * 2, true);
+        gearOutline.holes.push(centerHole);
+        const gearThickness = Number(objectDescription.thickness) || outerRadius * 0.3;
+        const gearGeometry = new THREE.ExtrudeGeometry(gearOutline, { depth: gearThickness, bevelEnabled: false, curveSegments: 24 });
+        gearGeometry.translate(0, 0, -gearThickness / 2);
+        return gearGeometry;
+      }
+      case 'capsule':
+        // A cylinder with rounded ends: cells, pills, pistons, bacteria.
+        return new THREE.CapsuleGeometry(radius, Math.max(0, height - radius * 2), 12, 32);
+      case 'spring': {
+        // A coil around the y axis: springs, coils, DNA backbones, wire windings.
+        const coilCount = Number(objectDescription.coils) || 6;
+        const springHeight = height;
+        const helixCurve = new THREE.Curve();
+        helixCurve.getPoint = (curveProgress, targetVector = new THREE.Vector3()) => targetVector.set(
+          Math.cos(curveProgress * coilCount * Math.PI * 2) * radius,
+          curveProgress * springHeight - springHeight / 2,
+          Math.sin(curveProgress * coilCount * Math.PI * 2) * radius
+        );
+        return new THREE.TubeGeometry(helixCurve, Math.round(coilCount * 40), Number(objectDescription.wireRadius) || radius * 0.08, 10, false);
       }
       case 'rect': {
         const rectSize = asArray(objectDescription.size);
@@ -1104,6 +1161,7 @@
       explainerState.isPlaying = false;
       refreshStepControls();
       postToNative({ type: 'finished' });
+      showQuiz();
     }
   }
 
@@ -1170,6 +1228,139 @@
     else if (keyEvent.key === 'ArrowRight') nextButton.click();
     else if (keyEvent.key === 'ArrowLeft') previousButton.click();
   });
+
+  // ─── Quiz ───────────────────────────────────────────────────────────────
+
+  const quizButton = document.getElementById('quiz-button');
+  const quizPanel = document.getElementById('quiz-panel');
+  const quizContentElement = document.getElementById('quiz-content');
+  const libraryButton = document.getElementById('library-button');
+  const libraryPanel = document.getElementById('library-panel');
+  const libraryContentElement = document.getElementById('library-content');
+
+  /** Questions look like { question, choices: [...], answerIndex, explanation }. */
+  function setQuiz(quizQuestions) {
+    explainerState.quizQuestions = asArray(quizQuestions).filter((quizQuestion) =>
+      quizQuestion && quizQuestion.question && Array.isArray(quizQuestion.choices) && quizQuestion.choices.length >= 2
+    );
+    quizButton.hidden = explainerState.quizQuestions.length === 0;
+  }
+
+  function showQuiz() {
+    if (!explainerState.quizQuestions || !explainerState.quizQuestions.length) return;
+    libraryPanel.hidden = true;
+    quizPanel.hidden = false;
+    explainerState.quizCorrectAnswerCount = 0;
+    renderQuizQuestion(0);
+  }
+
+  function renderQuizQuestion(questionIndex) {
+    const quizQuestions = explainerState.quizQuestions;
+    quizContentElement.innerHTML = '';
+
+    if (questionIndex >= quizQuestions.length) {
+      const scoreElement = document.createElement('div');
+      scoreElement.className = 'quiz-question';
+      scoreElement.textContent = 'You got ' + explainerState.quizCorrectAnswerCount + ' of ' + quizQuestions.length + ' right.';
+      const doneButton = document.createElement('button');
+      doneButton.className = 'panel-primary-button';
+      doneButton.textContent = 'Done';
+      doneButton.addEventListener('click', () => { quizPanel.hidden = true; });
+      quizContentElement.append(scoreElement, doneButton);
+      postToNative({ type: 'quizFinished', correctCount: explainerState.quizCorrectAnswerCount, questionCount: quizQuestions.length });
+      return;
+    }
+
+    const quizQuestion = quizQuestions[questionIndex];
+    const progressElement = document.createElement('div');
+    progressElement.className = 'quiz-progress';
+    progressElement.textContent = 'Question ' + (questionIndex + 1) + ' of ' + quizQuestions.length;
+    const questionElement = document.createElement('div');
+    questionElement.className = 'quiz-question';
+    questionElement.textContent = String(quizQuestion.question);
+    quizContentElement.append(progressElement, questionElement);
+
+    const correctChoiceIndex = Number(quizQuestion.answerIndex) || 0;
+    const choiceButtons = quizQuestion.choices.map((choiceText, choiceIndex) => {
+      const choiceButton = document.createElement('button');
+      choiceButton.className = 'quiz-choice';
+      choiceButton.textContent = String(choiceText);
+      choiceButton.addEventListener('click', () => {
+        const isCorrect = choiceIndex === correctChoiceIndex;
+        if (isCorrect) explainerState.quizCorrectAnswerCount += 1;
+        choiceButtons.forEach((otherButton, otherIndex) => {
+          otherButton.disabled = true;
+          if (otherIndex === correctChoiceIndex) otherButton.classList.add('is-correct');
+        });
+        if (!isCorrect) choiceButton.classList.add('is-wrong');
+
+        const feedbackElement = document.createElement('div');
+        feedbackElement.className = 'quiz-feedback';
+        feedbackElement.textContent = (isCorrect ? 'Right! ' : 'Not quite. ') + String(quizQuestion.explanation || '');
+        const nextButton = document.createElement('button');
+        nextButton.className = 'panel-primary-button';
+        nextButton.textContent = questionIndex + 1 < quizQuestions.length ? 'Next question' : 'See score';
+        nextButton.addEventListener('click', () => renderQuizQuestion(questionIndex + 1));
+        quizContentElement.append(feedbackElement, nextButton);
+      });
+      quizContentElement.appendChild(choiceButton);
+      return choiceButton;
+    });
+  }
+
+  quizButton.addEventListener('click', showQuiz);
+  document.getElementById('quiz-close-button').addEventListener('click', () => { quizPanel.hidden = true; });
+
+  // ─── Library ────────────────────────────────────────────────────────────
+
+  /** Entries look like { id, title, detail }. */
+  function showLibrary(libraryEntries) {
+    quizPanel.hidden = true;
+    libraryPanel.hidden = false;
+    libraryContentElement.innerHTML = '';
+    const entries = asArray(libraryEntries);
+    if (!entries.length) {
+      const emptyElement = document.createElement('div');
+      emptyElement.className = 'library-empty';
+      emptyElement.textContent = 'No saved explanations yet. Ask heySona to explain how something works, and it will be saved here to replay anytime.';
+      libraryContentElement.appendChild(emptyElement);
+      return;
+    }
+    entries.forEach((libraryEntry) => {
+      const entryElement = document.createElement('div');
+      entryElement.className = 'library-entry';
+      const textElement = document.createElement('div');
+      textElement.className = 'library-entry-text';
+      const titleElement = document.createElement('div');
+      titleElement.className = 'library-entry-title';
+      titleElement.textContent = String(libraryEntry.title || 'Untitled');
+      const detailElement = document.createElement('div');
+      detailElement.className = 'library-entry-detail';
+      detailElement.textContent = String(libraryEntry.detail || '');
+      textElement.append(titleElement, detailElement);
+
+      const playButton = document.createElement('button');
+      playButton.className = 'library-entry-button is-play';
+      playButton.textContent = 'Play';
+      playButton.addEventListener('click', () => {
+        libraryPanel.hidden = true;
+        postToNative({ type: 'libraryEntrySelected', id: String(libraryEntry.id) });
+      });
+      const deleteButton = document.createElement('button');
+      deleteButton.className = 'library-entry-button';
+      deleteButton.textContent = 'Delete';
+      deleteButton.addEventListener('click', () => {
+        entryElement.remove();
+        postToNative({ type: 'libraryEntryDeleted', id: String(libraryEntry.id) });
+        if (!libraryContentElement.querySelector('.library-entry')) showLibrary([]);
+      });
+      entryElement.append(textElement, playButton, deleteButton);
+      libraryContentElement.appendChild(entryElement);
+    });
+  }
+
+  libraryButton.addEventListener('click', () => postToNative({ type: 'libraryRequested' }));
+  document.getElementById('library-close-button').addEventListener('click', () => { libraryPanel.hidden = true; });
 
   // ─── Render loop ────────────────────────────────────────────────────────
 
@@ -1323,6 +1514,9 @@
 
       sceneTitleElement.textContent = explainerState.sceneDescription.title || 'heySona';
       loadingMessageElement.style.display = 'none';
+      quizPanel.hidden = true;
+      libraryPanel.hidden = true;
+      setQuiz(explainerState.sceneDescription.quiz);
 
       asArray(explainerState.sceneDescription.objects).forEach((objectDescription) => buildSceneObject(objectDescription, false));
 
@@ -1373,6 +1567,18 @@
         so the play button turns into "replay". */
     markFinished() {
       explainerState.isPlaying = false;
+      refreshStepControls();
+      showQuiz();
+    },
+    setQuiz,
+    showQuiz,
+    showLibrary,
+    /** A follow-up question is adding steps to this finished scene. */
+    continueScene() {
+      explainerState.stepsStillStreaming = true;
+      explainerState.isPlaying = true;
+      quizPanel.hidden = true;
+      libraryPanel.hidden = true;
       refreshStepControls();
     },
     /** Shows a message in the stage while the scene is being prepared. */

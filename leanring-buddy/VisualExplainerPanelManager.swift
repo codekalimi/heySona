@@ -38,6 +38,10 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     var onStepStarted: ((_ stepIndex: Int, _ narration: String) -> Void)?
     /// The user pressed play/pause in the window.
     var onPlayPauseRequested: ((_ isPlaying: Bool) -> Void)?
+    /// The user opened the library, picked an entry, or deleted one.
+    var onLibraryRequested: (() -> Void)?
+    var onLibraryEntrySelected: ((_ explanationID: String) -> Void)?
+    var onLibraryEntryDeleted: ((_ explanationID: String) -> Void)?
     var onExplainerClosed: (() -> Void)?
 
     var isExplainerVisible: Bool {
@@ -89,6 +93,25 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     /// Narration finished the last step; the play button becomes "replay".
     func markFinished() {
         evaluateRendererScript("heySonaExplainer.markFinished()")
+    }
+
+    /// `quizJSON` is a JSON array of { question, choices, answerIndex, explanation }.
+    func setQuiz(quizJSON: String) {
+        guard let quizData = quizJSON.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: quizData)) is [Any] else { return }
+        evaluateRendererScript("heySonaExplainer.setQuiz(\(quizJSON))")
+    }
+
+    /// A follow-up question is about to append steps to the current scene.
+    func continueScene() {
+        bringPanelToFront()
+        evaluateRendererScript("heySonaExplainer.continueScene()")
+    }
+
+    /// Shows the saved-explanations list (opening the window if needed).
+    func showLibrary(entriesJSON: String) {
+        bringPanelToFront()
+        evaluateRendererScript("heySonaExplainer.showLibrary(\(entriesJSON))")
     }
 
     func goToStep(_ stepIndex: Int) {
@@ -210,6 +233,16 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
             }
         case "close":
             closeExplainer()
+        case "libraryRequested":
+            onLibraryRequested?()
+        case "libraryEntrySelected":
+            if let explanationID = messageBody["id"] as? String {
+                onLibraryEntrySelected?(explanationID)
+            }
+        case "libraryEntryDeleted":
+            if let explanationID = messageBody["id"] as? String {
+                onLibraryEntryDeleted?(explanationID)
+            }
         case "error":
             print("⚠️ Visual explainer page error: \(messageBody["message"] as? String ?? "unknown")")
         default:

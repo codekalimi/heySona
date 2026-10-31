@@ -49,6 +49,9 @@ extension CompanionManager {
 
         if isVisualExplanationEnabled {
             systemPrompt += VisualExplanationSession.mainReplySystemPromptSection
+            if let openVisualExplanation, visualExplainerPanelManager.isExplainerVisible {
+                systemPrompt += VisualExplanationSession.followUpMainReplySystemPromptSection(openSceneTitle: openVisualExplanation.title)
+            }
         }
 
         if isMacActionsEnabled {

@@ -92,6 +92,20 @@ final class CompanionManager: ObservableObject {
     /// Voices the reply currently streaming in, if spoken replies are on.
     var currentStreamingReplySpeaker: StreamingReplySpeaker?
 
+    // MARK: - Open Visual Explanation
+
+    /// The explanation currently in the explainer window, kept so follow-up
+    /// questions can add to it and so it can be saved to the library.
+    struct OpenVisualExplanation {
+        /// Library id once saved (nil if not saved, e.g. deleted).
+        var savedExplanationID: String?
+        var sceneLines: [String]
+        var title: String
+        var question: String
+    }
+
+    var openVisualExplanation: OpenVisualExplanation?
+
     // MARK: - Guided Mode State (behavior in CompanionManager+GuidedMode.swift)
 
     /// When on, multi-step tasks continue after each of the user's clicks.
@@ -695,8 +709,13 @@ final class CompanionManager: ObservableObject {
                 let waitForClickExtraction = Self.removeWaitForClickTag(from: fullResponseText)
                 let shouldWaitForClickAfterReply = isGuidedModeEnabled && isStepGuidanceEnabled && waitForClickExtraction.didRequestWaitForClick
 
-                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: waitForClickExtraction.textWithoutTag)
-                let visualExplanationBrief = isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil
+                // A follow-up about the explanation already open adds steps to
+                // that scene; [VISUAL:...] starts a new one.
+                let followUpExtraction = VisualExplanationSession.extractVisualFollowUpBrief(from: waitForClickExtraction.textWithoutTag)
+                let visualExplanationFollowUpBrief = isVisualExplanationEnabled && openVisualExplanation != nil ? followUpExtraction.brief : nil
+                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: followUpExtraction.textWithoutTag)
+                let isVisualExplanationFollowUp = visualExplanationFollowUpBrief != nil
+                let visualExplanationBrief = visualExplanationFollowUpBrief ?? (isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil)
 
                 let drawingExtraction = ScreenDrawingTagParser.extractDrawings(
                     from: visualExplanationExtraction.textWithoutTag,
@@ -807,6 +826,7 @@ final class CompanionManager: ObservableObject {
                         startVisualExplanation(
                             brief: visualExplanationBrief,
                             userQuestion: transcript,
+                            isFollowUp: isVisualExplanationFollowUp,
                             waitForLeadInToFinish: { await streamingReplySpeaker.waitUntilFinished() }
                         )
                     }
@@ -846,7 +866,7 @@ final class CompanionManager: ObservableObject {
                 // Text-only replies: start the visual explanation after the
                 // lead-in is shown. (Streaming replies started it above.)
                 if streamingReplySpeaker == nil, let visualExplanationBrief, !Task.isCancelled {
-                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript)
+                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript, isFollowUp: isVisualExplanationFollowUp)
                 }
 
                 if shouldWaitForClickAfterReply && !Task.isCancelled {
