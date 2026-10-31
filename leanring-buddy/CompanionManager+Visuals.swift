@@ -16,16 +16,35 @@ extension CompanionManager {
     /// Opens the built-in rocket engine demo (Settings > Visuals).
     func showVisualExplainerDemo() {
         stopVisualExplanation()
+        openVisualExplanation = nil
+        configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showDemoRocketExplanation()
     }
 
-    /// `waitForLeadInToFinish` lets narration wait for the spoken lead-in
-    /// ("sure, let me show you…") when it's still being streamed.
-    func startVisualExplanation(brief: String, userQuestion: String, waitForLeadInToFinish: (() async -> Void)? = nil) {
+    /// Opens the explainer window on the saved-explanations list.
+    func showVisualExplanationLibrary() {
+        configureVisualExplainerWindowCallbacks()
+        visualExplainerPanelManager.showPreparingStatus("Pick an explanation from your library.")
+        visualExplainerPanelManager.showLibrary(entriesJSON: ExplanationLibraryStore.libraryEntriesJSON())
+    }
+
+    /// `isFollowUp` adds steps to the explanation already open instead of
+    /// starting a new one. `waitForLeadInToFinish` lets narration wait for the
+    /// spoken lead-in ("sure, let me show you…") while it's still streaming.
+    func startVisualExplanation(
+        brief: String,
+        userQuestion: String,
+        isFollowUp: Bool = false,
+        waitForLeadInToFinish: (() async -> Void)? = nil
+    ) {
         stopVisualExplanation()
-        print("🎬 Visual explanation requested: \(brief)")
+        configureVisualExplainerWindowCallbacks()
+
+        let explanationBeingFollowedUp = isFollowUp ? openVisualExplanation : nil
+        print(explanationBeingFollowedUp == nil ? "🎬 Visual explanation requested: \(brief)" : "🎬 Visual follow-up requested: \(brief)")
 
         let visualExplanationSession = VisualExplanationSession(
+            source: explanationBeingFollowedUp.map { .followUp(existingSceneLines: $0.sceneLines) } ?? .newTopic,
             explanationBrief: brief,
             userQuestion: userQuestion,
             claudeAPI: claudeAPI,
@@ -43,14 +62,78 @@ extension CompanionManager {
                 self.responseOverlayManager.finishStreaming()
             }
         }
-        // Closing the window stops generation and narration.
-        visualExplainerPanelManager.onExplainerClosed = { [weak self] in
-            self?.stopVisualExplanation()
+        // Save every finished explanation (a follow-up updates the same
+        // library entry) and remember it for further follow-ups.
+        visualExplanationSession.onSceneCompleted = { [weak self] sceneLines, sceneTitle in
+            guard let self else { return }
+            let savedExplanationID = ExplanationLibraryStore.save(
+                sceneLines: sceneLines,
+                title: sceneTitle,
+                question: explanationBeingFollowedUp?.question ?? userQuestion,
+                existingExplanationID: explanationBeingFollowedUp?.savedExplanationID
+            )
+            self.openVisualExplanation = OpenVisualExplanation(
+                savedExplanationID: savedExplanationID,
+                sceneLines: sceneLines,
+                title: sceneTitle,
+                question: explanationBeingFollowedUp?.question ?? userQuestion
+            )
         }
 
         visualExplanationSession.waitForLeadInToFinish = waitForLeadInToFinish
         currentVisualExplanationSession = visualExplanationSession
         visualExplanationSession.start()
+    }
+
+    /// Replays a saved explanation with narration, without asking Claude.
+    func replaySavedExplanation(explanationID: String) {
+        guard let savedExplanation = ExplanationLibraryStore.load(explanationID: explanationID) else {
+            print("⚠️ Explanation library: \(explanationID) not found")
+            return
+        }
+        stopVisualExplanation()
+        configureVisualExplainerWindowCallbacks()
+        print("📚 Replaying \"\(savedExplanation.title)\"")
+
+        let visualExplanationSession = VisualExplanationSession(
+            source: .saved(sceneLines: savedExplanation.sceneLines),
+            explanationBrief: "",
+            userQuestion: savedExplanation.question,
+            claudeAPI: claudeAPI,
+            elevenLabsTTSClient: elevenLabsTTSClient,
+            explainerPanelManager: visualExplainerPanelManager,
+            isNarrationEnabled: isSpokenReplyEnabled
+        )
+        openVisualExplanation = OpenVisualExplanation(
+            savedExplanationID: savedExplanation.id,
+            sceneLines: savedExplanation.sceneLines,
+            title: savedExplanation.title,
+            question: savedExplanation.question
+        )
+        currentVisualExplanationSession = visualExplanationSession
+        visualExplanationSession.start()
+    }
+
+    /// The window's library buttons and close button. Safe to call repeatedly.
+    func configureVisualExplainerWindowCallbacks() {
+        visualExplainerPanelManager.onLibraryRequested = { [weak self] in
+            self?.visualExplainerPanelManager.showLibrary(entriesJSON: ExplanationLibraryStore.libraryEntriesJSON())
+        }
+        visualExplainerPanelManager.onLibraryEntrySelected = { [weak self] explanationID in
+            self?.replaySavedExplanation(explanationID: explanationID)
+        }
+        visualExplainerPanelManager.onLibraryEntryDeleted = { [weak self] explanationID in
+            ExplanationLibraryStore.delete(explanationID: explanationID)
+            if self?.openVisualExplanation?.savedExplanationID == explanationID {
+                self?.openVisualExplanation?.savedExplanationID = nil
+            }
+        }
+        // Closing the window stops generation and narration, and ends
+        // follow-ups on that explanation.
+        visualExplainerPanelManager.onExplainerClosed = { [weak self] in
+            self?.stopVisualExplanation()
+            self?.openVisualExplanation = nil
+        }
     }
 
     func stopVisualExplanation() {

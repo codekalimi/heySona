@@ -129,12 +129,18 @@ struct SettingsView: View {
                     )
 
                     HStack {
-                        Text("See an example")
+                        Text("Saved explanations replay anytime, free.")
                             .font(.system(size: 11))
                             .foregroundColor(DS.Colors.textTertiary)
                         Spacer()
                         SettingsCapsuleButton(
-                            title: "Show rocket demo",
+                            title: "Open library",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showVisualExplanationLibrary() }
+                        )
+                        SettingsCapsuleButton(
+                            title: "Rocket demo",
                             isProminent: false,
                             isEnabled: true,
                             action: { companionManager.showVisualExplainerDemo() }

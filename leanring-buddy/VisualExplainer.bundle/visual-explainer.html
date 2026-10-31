@@ -68,6 +68,86 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .header-button {
+      height: 26px;
+      padding: 0 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .header-button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+    #quiz-button { border-color: var(--accent); color: #ffffff; background: var(--accent-soft); }
+
+    /* ---- Quiz and library panels, floating over the stage ---- */
+    .stage-panel {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(520px, calc(100% - 40px));
+      max-height: calc(100% - 40px);
+      overflow-y: auto;
+      padding: 16px 18px;
+      border-radius: 14px;
+      background: rgba(23, 25, 24, 0.97);
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      cursor: default;
+      z-index: 5;
+    }
+    .stage-panel[hidden] { display: none; }
+    .stage-panel-header { display: flex; align-items: center; margin-bottom: 12px; }
+    .stage-panel-title { flex: 1; font-size: 14px; font-weight: 650; }
+    .panel-close-button {
+      width: 26px; height: 26px; border-radius: 50%;
+      border: none; background: rgba(255, 255, 255, 0.08);
+      color: var(--text-secondary); cursor: pointer;
+    }
+    .panel-close-button:hover { background: rgba(255, 255, 255, 0.14); color: var(--text-primary); }
+
+    .quiz-progress { font-size: 11px; color: var(--text-tertiary); margin-bottom: 6px; }
+    .quiz-question { font-size: 15px; line-height: 1.4; margin-bottom: 12px; }
+    .quiz-choice {
+      display: block; width: 100%; text-align: left;
+      margin-bottom: 8px; padding: 10px 12px;
+      border-radius: 10px; border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-primary); font-size: 13px; cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .quiz-choice:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+    .quiz-choice:disabled { cursor: default; }
+    .quiz-choice.is-correct { border-color: #4cd6a0; background: rgba(76, 214, 160, 0.14); }
+    .quiz-choice.is-wrong { border-color: #ff6b8b; background: rgba(255, 107, 139, 0.12); }
+    .quiz-feedback { font-size: 13px; line-height: 1.45; color: var(--text-secondary); margin: 6px 0 12px; }
+    .panel-primary-button {
+      height: 32px; padding: 0 16px; border-radius: 999px; border: none;
+      background: var(--accent); color: #ffffff; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .panel-primary-button:hover { background: #1d4ed8; }
+
+    .library-entry {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 4px; border-bottom: 1px solid rgba(55, 59, 57, 0.6);
+    }
+    .library-entry:last-child { border-bottom: none; }
+    .library-entry-text { flex: 1; min-width: 0; }
+    .library-entry-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .library-entry-detail { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+    .library-entry-button {
+      height: 26px; padding: 0 11px; border-radius: 999px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .library-entry-button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+    .library-entry-button.is-play { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+    .library-empty { font-size: 13px; color: var(--text-tertiary); line-height: 1.5; padding: 8px 0; }
+
     /* ---- Stage: the 3D/2D canvas with labels on top ---- */
     #stage {
       position: relative;
@@ -261,11 +341,31 @@
     <div id="header">
       <div id="scene-title">heySona</div>
       <div id="step-counter"></div>
+      <button class="header-button" id="quiz-button" title="Check your understanding" hidden>Quiz</button>
+      <button class="header-button" id="library-button" title="Saved explanations">Library</button>
     </div>
 
     <div id="stage">
       <div id="label-layer"></div>
       <div id="loading-message">Preparing the explanation…</div>
+
+      <!-- Quiz: a few multiple-choice questions after the explanation. -->
+      <div class="stage-panel" id="quiz-panel" hidden>
+        <div class="stage-panel-header">
+          <div class="stage-panel-title">Check your understanding</div>
+          <button class="panel-close-button" id="quiz-close-button" title="Close quiz">✕</button>
+        </div>
+        <div id="quiz-content"></div>
+      </div>
+
+      <!-- Library: explanations saved on this Mac. -->
+      <div class="stage-panel" id="library-panel" hidden>
+        <div class="stage-panel-header">
+          <div class="stage-panel-title">Saved explanations</div>
+          <button class="panel-close-button" id="library-close-button" title="Close library">✕</button>
+        </div>
+        <div id="library-content"></div>
+      </div>
     </div>
 
     <div id="caption"></div>

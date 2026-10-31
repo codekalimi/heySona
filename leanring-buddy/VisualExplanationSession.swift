@@ -16,8 +16,19 @@
 
 import Foundation
 
+/// Where a session's scene comes from.
+enum VisualExplanationSource {
+    /// Claude writes a new scene for a question.
+    case newTopic
+    /// Claude adds steps to the scene already open, answering a follow-up.
+    case followUp(existingSceneLines: [String])
+    /// A scene saved in the library, replayed without asking Claude.
+    case saved(sceneLines: [String])
+}
+
 @MainActor
 final class VisualExplanationSession {
+    private let source: VisualExplanationSource
     private let explanationBrief: String
     private let userQuestion: String
     private let claudeAPI: ClaudeAPI
@@ -51,7 +62,17 @@ final class VisualExplanationSession {
     /// Called once if the scene couldn't be made, with a short spoken apology.
     var onSceneFailed: ((_ spokenFailureMessage: String) -> Void)?
 
+    /// Called once the whole scene has arrived (setup, steps, quiz), with
+    /// every line as played, so it can be saved and followed up on.
+    var onSceneCompleted: ((_ sceneLines: [String], _ sceneTitle: String) -> Void)?
+
+    /// Every line of the scene so far, normalized: setup, steps, quiz.
+    private var recordedSceneLines: [String] = []
+    private var recordedQuizLine: String?
+    private var sceneTitle = "Explanation"
+
     init(
+        source: VisualExplanationSource = .newTopic,
         explanationBrief: String,
         userQuestion: String,
         claudeAPI: ClaudeAPI,
@@ -59,6 +80,7 @@ final class VisualExplanationSession {
         explainerPanelManager: VisualExplainerPanelManager,
         isNarrationEnabled: Bool
     ) {
+        self.source = source
         self.explanationBrief = explanationBrief
         self.userQuestion = userQuestion
         self.claudeAPI = claudeAPI
@@ -70,7 +92,6 @@ final class VisualExplanationSession {
     // MARK: - Start And Stop
 
     func start() {
-        explainerPanelManager.showPreparingStatus("Building your explanation…")
         explainerPanelManager.onStepStarted = { [weak self] stepIndex, _ in
             self?.handleWindowStepStarted(stepIndex: stepIndex)
         }
@@ -78,8 +99,43 @@ final class VisualExplanationSession {
             self?.handleWindowPlayPause(isPlaying: isPlaying)
         }
 
-        sceneStreamingTask = Task { [weak self] in
-            await self?.streamSceneFromClaude()
+        switch source {
+        case .newTopic:
+            explainerPanelManager.showPreparingStatus("Building your explanation…")
+            sceneStreamingTask = Task { [weak self] in
+                await self?.streamSceneFromClaude()
+            }
+
+        case .followUp(let existingSceneLines):
+            // The scene is already on screen: remember its steps so new step
+            // indexes continue after them, then let Claude add steps.
+            for existingSceneLine in existingSceneLines {
+                guard let lineObject = Self.jsonObject(from: existingSceneLine) else { continue }
+                if recordedSceneLines.isEmpty {
+                    sceneTitle = lineObject["title"] as? String ?? sceneTitle
+                    recordedSceneLines.append(existingSceneLine)
+                } else if lineObject["quiz"] != nil {
+                    recordedQuizLine = existingSceneLine
+                } else {
+                    recordedSceneLines.append(existingSceneLine)
+                    stepNarrations.append(lineObject["narration"] as? String ?? "")
+                }
+            }
+            hasShownSceneHeader = true
+            explainerPanelManager.continueScene()
+            if isNarrationEnabled {
+                startNarrationLoop(fromStepIndex: stepNarrations.count)
+            }
+            sceneStreamingTask = Task { [weak self] in
+                await self?.streamSceneFromClaude()
+            }
+
+        case .saved(let sceneLines):
+            sceneLines.forEach(handleSceneLine)
+            isSceneStreamFinished = true
+            if hasShownSceneHeader {
+                explainerPanelManager.finishSteps()
+            }
         }
     }
 
@@ -99,17 +155,32 @@ final class VisualExplanationSession {
     private func streamSceneFromClaude() async {
         let sceneLineReader = JSONLineReader()
 
+        let isFollowUp: Bool
+        if case .followUp = source { isFollowUp = true } else { isFollowUp = false }
+        let sceneRequestUserPrompt = isFollowUp
+            ? """
+            The scene currently open, as JSON Lines (setup line, then steps):
+            \(recordedSceneLines.joined(separator: "\n"))
+
+            The user's follow-up: "\(userQuestion)"
+
+            What to show next: \(explanationBrief)
+
+            Write only the new step lines now (and a new quiz line at the end if it fits).
+            """
+            : """
+            The user asked: "\(userQuestion)"
+
+            What to explain: \(explanationBrief)
+
+            Write the scene now, as JSON Lines.
+            """
+
         do {
             _ = try await claudeAPI.analyzeImageStreaming(
                 images: [],
-                systemPrompt: Self.sceneAuthoringSystemPrompt,
-                userPrompt: """
-                The user asked: "\(userQuestion)"
-
-                What to explain: \(explanationBrief)
-
-                Write the scene now, as JSON Lines.
-                """,
+                systemPrompt: isFollowUp ? Self.sceneAuthoringSystemPrompt + Self.followUpAuthoringPromptSection : Self.sceneAuthoringSystemPrompt,
+                userPrompt: sceneRequestUserPrompt,
                 onTextChunk: { [weak self] accumulatedText in
                     for completeLine in sceneLineReader.newCompleteLines(in: accumulatedText) {
                         self?.handleSceneLine(completeLine)
@@ -138,6 +209,7 @@ final class VisualExplanationSession {
         }
         explainerPanelManager.finishSteps()
         print("🎬 Visual explanation: scene complete with \(stepNarrations.count) step(s)")
+        onSceneCompleted?(recordedSceneLines + [recordedQuizLine].compactMap { $0 }, sceneTitle)
     }
 
     /// Routes one JSON line: the first scene object sets up the scene,
@@ -154,15 +226,25 @@ final class VisualExplanationSession {
             return
         }
 
+        // A quiz can come as its own line ({"quiz": [...]}) at the end.
+        if hasShownSceneHeader, let quizQuestions = lineObject["quiz"] as? [Any] {
+            handleQuiz(quizQuestions)
+            return
+        }
+
         if !hasShownSceneHeader {
             // Steps written inside the header (instead of on their own
             // lines) are split out and handled like streamed steps.
             var sceneHeader = lineObject
             let stepsInsideHeader = sceneHeader["steps"] as? [[String: Any]] ?? []
+            let quizInsideHeader = sceneHeader["quiz"] as? [Any]
             sceneHeader["steps"] = [Any]()
+            sceneHeader["quiz"] = nil
             guard let headerJSON = Self.jsonText(sceneHeader) else { return }
 
             hasShownSceneHeader = true
+            sceneTitle = sceneHeader["title"] as? String ?? sceneTitle
+            recordedSceneLines.append(headerJSON)
             explainerPanelManager.showScene(
                 sceneJSON: headerJSON,
                 autoAdvance: !isNarrationEnabled,
@@ -173,6 +255,9 @@ final class VisualExplanationSession {
                 startNarrationLoop()
             }
             stepsInsideHeader.forEach(handleStepObject)
+            if let quizInsideHeader {
+                handleQuiz(quizInsideHeader)
+            }
             return
         }
 
@@ -183,7 +268,20 @@ final class VisualExplanationSession {
         guard stepObject["narration"] != nil || stepObject["actions"] != nil,
               let stepJSON = Self.jsonText(stepObject) else { return }
         stepNarrations.append(stepObject["narration"] as? String ?? "")
+        recordedSceneLines.append(stepJSON)
         explainerPanelManager.appendStep(stepJSON: stepJSON)
+    }
+
+    private func handleQuiz(_ quizQuestions: [Any]) {
+        guard let quizData = try? JSONSerialization.data(withJSONObject: quizQuestions),
+              let quizJSON = String(data: quizData, encoding: .utf8) else { return }
+        recordedQuizLine = Self.jsonText(["quiz": quizQuestions])
+        explainerPanelManager.setQuiz(quizJSON: quizJSON)
+    }
+
+    private static func jsonObject(from jsonLine: String) -> [String: Any]? {
+        guard let lineData = jsonLine.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any]
     }
 
     // MARK: - Narration
@@ -220,6 +318,10 @@ final class VisualExplanationSession {
                 if Task.isCancelled { return }
             }
             guard stepIndex < stepNarrations.count else {
+                if recordedQuizLine != nil, let quizInvitationAudio = try? await elevenLabsTTSClient.synthesizeSpeechAudio("now, a quick quiz to check your understanding.") {
+                    if Task.isCancelled { return }
+                    try? elevenLabsTTSClient.playSpeechAudio(quizInvitationAudio)
+                }
                 explainerPanelManager.markFinished()
                 return
             }
@@ -332,6 +434,13 @@ final class VisualExplanationSession {
         return String(data: jsonData, encoding: .utf8)
     }
 
+    /// Added to the authoring prompt when continuing an open scene.
+    static let followUpAuthoringPromptSection = """
+
+
+    FOLLOW-UP MODE: the scene is already on screen and the user asked a follow-up. Do NOT write a setup line. Write only 2 to 4 new step lines that answer the follow-up, continuing from where the scene is: reuse the existing object ids (they're all still there, in the state the last step left them), move the camera to what the follow-up is about, add new objects with "add" if needed (with new unique ids), and tidy up earlier labels and effects that no longer apply. Optionally end with a new quiz line about the follow-up.
+    """
+
     // MARK: - Main Reply Tag
 
     /// Finds a [VISUAL:brief] tag anywhere in Claude's main reply and
@@ -351,6 +460,31 @@ final class VisualExplanationSession {
             .replacingOccurrences(of: "  ", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (textWithoutTag, brief.isEmpty ? nil : brief)
+    }
+
+    /// Finds a [VISUAL_FOLLOWUP:brief] tag (a follow-up about the scene
+    /// already open) and removes it so it's never spoken.
+    static func extractVisualFollowUpBrief(from responseText: String) -> (textWithoutTag: String, brief: String?) {
+        guard let followUpTagRegex = try? NSRegularExpression(pattern: #"\[VISUAL_FOLLOWUP:\s*([^\]]+?)\s*\]"#, options: [.caseInsensitive]),
+              let tagMatch = followUpTagRegex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
+              let tagRange = Range(tagMatch.range, in: responseText),
+              let briefRange = Range(tagMatch.range(at: 1), in: responseText) else {
+            return (responseText, nil)
+        }
+        let brief = String(responseText[briefRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        var textWithoutTag = responseText
+        textWithoutTag.removeSubrange(tagRange)
+        textWithoutTag = textWithoutTag.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (textWithoutTag, brief.isEmpty ? nil : brief)
+    }
+
+    /// Added to the main system prompt while an explanation is open, so
+    /// follow-up questions build on it instead of starting over.
+    static func followUpMainReplySystemPromptSection(openSceneTitle: String) -> String {
+        """
+
+        the visual explainer is open, showing "\(openSceneTitle)". if the user's question is a follow-up about it (zoom in, show a part, go deeper, why or how something in it works, compare a part), reply with a short one-sentence lead-in and add [VISUAL_FOLLOWUP:a brief of what to show and explain next] at the very end, before [POINT:none]; the explainer will add new steps to the same scene. if they ask about something different that deserves its own visual, use [VISUAL:...] instead. otherwise answer normally.
+        """
     }
 
     /// Appended to the main system prompt while visual explanations are on.
@@ -422,6 +556,13 @@ final class VisualExplanationSession {
     - Every id used in an action must exist (in setup or added in an earlier or the same step).
     - Don't attach things to objects that are moving (revolving or moving): if you need a label or line on a moving object, stop it first.
     - Be accurate. If the topic is abstract (ideas, history, economics), use a 2d diagram: cards, connecting arrows or lines, a timeline line with circle markers and cards, or a simple chart built from rects.
+
+    QUIZ: after the last step, add one more line: {"quiz":[{"question":"...","choices":["...","...","...","..."],"answerIndex":2,"explanation":"one short sentence"}]} with 2 or 3 questions that check the key ideas (not trivia), 3 or 4 short choices each, one clearly correct.
+
+    PRE-BUILT PARTS (use them where they fit; they look much better than stacking boxes):
+    - gear: "radius", "teeth" (6-60), "thickness", optional "innerRadius", "holeRadius". A flat toothed gear facing +z (rotate [90,0,0] to lay it flat). Meshing gears: place centers about radiusA + radiusB × 0.9 apart, and spin them in opposite directions with speeds in the inverse ratio of their teeth.
+    - capsule: "radius", "height" — a cylinder with rounded ends (cells, bacteria, pills, pistons, batteries).
+    - spring: "radius", "height", "coils", "wireRadius" — a coil around the y axis (springs, coils, solenoids, windings).
 
     EXAMPLE (shortened):
     {"title":"Why compound interest snowballs","mode":"2d","view":{"width":18},"camera":{"fit":true},"objects":[{"id":"xAxis","shape":"line","points":[[-7,-4,0],[7,-4,0]],"width":0.06,"color":"#6b736f"},{"id":"yAxis","shape":"line","points":[[-7,-4,0],[-7,5,0]],"width":0.06,"color":"#6b736f"},{"id":"simple","shape":"line","drawn":false,"width":0.12,"color":"#7cc4ff","points":[[-7,-3,0],[0,-0.2,0],[7,2.6,0]]}]}
