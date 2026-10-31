@@ -14,7 +14,7 @@ Personal-use build: the app calls Anthropic, AssemblyAI, and ElevenLabs directly
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) called directly with SSE streaming
+- **AI Chat**: Claude (Opus 5.5 default; Sonnet 5.5 and Haiku 5.5 selectable) called directly with SSE streaming. Models and per-request settings live in `ClaudeModelCatalog`: adaptive thinking with `output_config.effort: "low"` (time to first word matters for voice), `max_tokens` 64000 (thinking counts toward it), `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` (beta `thinking-binding-controls-2026-08-01`), and `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`) on Opus/Sonnet only, since Haiku 5.5 has no server-side fallback. A final `stop_reason: "refusal"` throws `ClaudeResponseRefusedError` and heySona speaks a short decline; after a mid-stream fallback, only text from before the `fallback` block is echoed and only the fallback model's tool calls run. Request bodies use sorted JSON keys so tool-loop history stays byte-identical. Saved Sonnet/Opus 4.6 choices map to their 5.5 models.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) called directly
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -69,7 +69,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
 | `CompanionManager.swift` | ~1380 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Haiku/Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | Cursor-following text bubble for replies. Used when spoken replies are turned off in Settings. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -82,6 +82,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `GlobalHotKeyRegistrar.swift` | ~120 | Registers consuming system-wide hot keys via Carbon `RegisterEventHotKey` (type-to-ask, Esc to stop). |
 | `TypeToAskPanelManager.swift` | ~170 | Spotlight-style floating text box for typing a question instead of speaking. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
+| `ClaudeModelCatalog.swift` | ~85 | Claude models offered in the pickers, default model, effort level, `max_tokens`, which models support server-side refusal fallback, and saved-choice migration. |
 | `ClaudeAPI.swift` | ~490 | Claude vision API client with streaming (SSE) and non-streaming modes. Streaming mode runs the client tool-use loop for Mac actions. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the ElevenLabs API, plays back audio via `AVAudioPlayer`, and lists the account's voices for Settings. Exposes `isPlaying` for transient cursor scheduling. |

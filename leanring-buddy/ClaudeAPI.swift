@@ -9,6 +9,12 @@ import Foundation
 /// its `tool_result`, plus whether the call failed.
 typealias ClaudeToolCallHandler = @MainActor (_ toolName: String, _ toolInput: [String: Any]) async -> (resultText: String, isError: Bool)
 
+/// The model declined the request (`stop_reason: "refusal"`) and no
+/// fallback model answered instead.
+struct ClaudeResponseRefusedError: LocalizedError {
+    var errorDescription: String? { "Claude declined to answer this request." }
+}
+
 /// Claude API helper with streaming for progressive text display.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
@@ -18,7 +24,7 @@ class ClaudeAPI {
     var model: String
     private let session: URLSession
 
-    init(model: String = "claude-sonnet-4-6") {
+    init(model: String = ClaudeModelCatalog.defaultModelOption.modelID) {
         self.model = model
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
@@ -158,17 +164,38 @@ class ClaudeAPI {
         for toolRoundTripIndex in 0...Self.maximumToolRoundTripsPerResponse {
             var body: [String: Any] = [
                 "model": model,
-                "max_tokens": 1024,
+                "max_tokens": ClaudeModelCatalog.streamingResponseMaximumTokens,
                 "stream": true,
                 "system": systemPrompt,
-                "messages": messages
+                "messages": messages,
+                // Thinking is always on for the current models; effort sets how much.
+                "output_config": ["effort": ClaudeModelCatalog.responseEffortLevel],
+                // Thinking blocks are only valid in the exact conversation that
+                // produced them. This loop only appends, but if a block ever
+                // fails that check, drop it instead of failing the request.
+                "thinking": [
+                    "type": "adaptive",
+                    "block_binding": ["prefix_mismatch_behavior": "drop_block"]
+                ] as [String: Any]
             ]
             if isToolUseEnabled {
                 body["tools"] = tools
             }
 
+            var betaFeatureNames = ["thinking-binding-controls-2026-08-01"]
+            // When a safety classifier declines a request (sometimes a false
+            // positive), re-run it on the model Anthropic recommends instead
+            // of returning a refusal.
+            if ClaudeModelCatalog.modelOption(forModelID: model)?.supportsServerSideRefusalFallback == true {
+                body["fallbacks"] = "default"
+                betaFeatureNames.append("server-side-fallback-2026-07-01")
+            }
+
             var request = try makeAPIRequest()
-            let bodyData = try JSONSerialization.data(withJSONObject: body)
+            request.setValue(betaFeatureNames.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
+            // Sorted keys keep the serialized history byte-identical between
+            // tool round trips, which thinking-block checks and caching rely on.
+            let bodyData = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
             request.httpBody = bodyData
             let payloadMB = Double(bodyData.count) / 1_048_576.0
             print("🌐 Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s), turn \(toolRoundTripIndex + 1)")
@@ -190,7 +217,16 @@ class ClaudeAPI {
                 }
             )
 
-            let toolUseBlocks = completedAssistantTurn.contentBlocks.filter { ($0["type"] as? String) == "tool_use" }
+            // A refusal that survived any fallback ends the reply. Whatever
+            // partial text arrived is discarded rather than spoken as an answer.
+            if completedAssistantTurn.stopReason == "refusal" {
+                throw ClaudeResponseRefusedError()
+            }
+
+            let assistantContentBlocksToEcho = Self.contentBlocksAfterRemovingDeclinedFallbackAttempt(
+                completedAssistantTurn.contentBlocks
+            )
+            let toolUseBlocks = assistantContentBlocksToEcho.filter { ($0["type"] as? String) == "tool_use" }
 
             // Only run tools when Claude actually stopped to call them. On
             // "max_tokens" or "refusal" a tool_use block may be cut off
@@ -209,7 +245,7 @@ class ClaudeAPI {
 
             // Echo the assistant turn back unchanged (text, tool_use, and any
             // thinking blocks), as the API requires before tool results.
-            messages.append(["role": "assistant", "content": completedAssistantTurn.contentBlocks])
+            messages.append(["role": "assistant", "content": assistantContentBlocksToEcho])
 
             var toolResultBlocks: [[String: Any]] = []
             for toolUseBlock in toolUseBlocks {
@@ -250,6 +286,25 @@ class ClaudeAPI {
     /// Upper limit on tool round trips in one reply, so a confused model
     /// can't loop forever on the user's Mac.
     private static let maximumToolRoundTripsPerResponse = 6
+
+    /// When a model declines partway through and a fallback model continues
+    /// on the same stream, a `fallback` block marks the switch. Anything the
+    /// declined model produced before that point other than plain text
+    /// (thinking, tool calls) must not be echoed back or acted on. The
+    /// marker itself is only an audit record, so it's dropped too.
+    private static func contentBlocksAfterRemovingDeclinedFallbackAttempt(
+        _ contentBlocks: [[String: Any]]
+    ) -> [[String: Any]] {
+        guard let lastFallbackMarkerIndex = contentBlocks.lastIndex(where: { ($0["type"] as? String) == "fallback" }) else {
+            return contentBlocks
+        }
+
+        let textBlocksFromDeclinedAttempt = contentBlocks[..<lastFallbackMarkerIndex].filter { contentBlock in
+            (contentBlock["type"] as? String) == "text"
+        }
+        let blocksFromFallbackModel = contentBlocks[(lastFallbackMarkerIndex + 1)...]
+        return Array(textBlocksFromDeclinedAttempt) + Array(blocksFromFallbackModel)
+    }
 
     /// One finished assistant turn from the stream.
     private struct CompletedAssistantTurn {

@@ -122,7 +122,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isOverlayVisible: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// Older saved choices (Sonnet 4.6, Opus 4.6) map to the current model in
+    /// the same family; see ClaudeModelCatalog.
+    @Published var selectedModel: String = ClaudeModelCatalog
+        .modelOption(forSavedModelID: UserDefaults.standard.string(forKey: "selectedClaudeModel"))
+        .modelID
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
@@ -868,6 +872,9 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Spoken when Claude declines a request and no fallback model answers.
+    private static let declinedRequestSpokenReply = "sorry, i can't help with that one. want to try asking it a different way?"
+
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
@@ -941,17 +948,26 @@ final class CompanionManager: ObservableObject {
 
                 let requestSetup = makeRequestSetup(transcript: transcript)
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: requestSetup.systemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: requestSetup.userPrompt,
-                    tools: requestSetup.toolDefinitions,
-                    toolCallHandler: requestSetup.toolDefinitions.isEmpty ? nil : requestSetup.toolCallHandler,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
-                )
+                let fullResponseText: String
+                do {
+                    let streamingResult = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: requestSetup.systemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: requestSetup.userPrompt,
+                        tools: requestSetup.toolDefinitions,
+                        toolCallHandler: requestSetup.toolDefinitions.isEmpty ? nil : requestSetup.toolCallHandler,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                    fullResponseText = streamingResult.text
+                } catch is ClaudeResponseRefusedError {
+                    // A safety decline isn't an outage, so say so plainly instead
+                    // of the "out of credits" error message.
+                    print("⚠️ Claude declined this request")
+                    fullResponseText = Self.declinedRequestSpokenReply
+                }
 
                 guard !Task.isCancelled else { return }
 

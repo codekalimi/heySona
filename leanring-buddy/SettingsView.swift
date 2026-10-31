@@ -123,16 +123,13 @@ struct SettingsView: View {
 
             settingsCard {
                 HStack(spacing: 8) {
-                    modelOptionButton(
-                        label: "Sonnet",
-                        detail: "Faster",
-                        modelID: "claude-sonnet-4-6"
-                    )
-                    modelOptionButton(
-                        label: "Opus",
-                        detail: "Smarter, slower",
-                        modelID: "claude-opus-4-6"
-                    )
+                    ForEach(ClaudeModelCatalog.allModelOptions) { modelOption in
+                        modelOptionButton(
+                            label: modelOption.pickerLabel,
+                            detail: modelOption.pickerDetail,
+                            modelID: modelOption.modelID
+                        )
+                    }
                 }
             }
         }

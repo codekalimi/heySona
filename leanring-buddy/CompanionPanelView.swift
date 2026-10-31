@@ -672,8 +672,9 @@ struct CompanionPanelView: View {
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                ForEach(ClaudeModelCatalog.allModelOptions) { modelOption in
+                    modelOptionButton(label: modelOption.pickerLabel, modelID: modelOption.modelID)
+                }
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
