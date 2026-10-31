@@ -13,6 +13,7 @@
 //
 
 import AppKit
+import SwiftUI
 import WebKit
 
 @MainActor
