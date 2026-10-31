@@ -109,6 +109,27 @@ struct SettingsView: View {
                         )
                     )
 
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Visual explainer (preview)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(DS.Colors.textSecondary)
+                            Text("Animated 3D explanations. Try the built-in rocket engine demo; asking heySona to explain things this way is coming next.")
+                                .font(.system(size: 10))
+                                .foregroundColor(DS.Colors.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer()
+
+                        SettingsCapsuleButton(
+                            title: "Show demo",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showVisualExplainerDemo() }
+                        )
+                    }
+
                     settingsToggleRow(
                         title: "Show captions",
                         detail: "Shows the spoken reply as text next to your cursor while heySona talks.",

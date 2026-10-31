@@ -345,6 +345,16 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Visual Explainer
+
+    /// Floating window that shows animated 3D/2D explanations.
+    let visualExplainerPanelManager = VisualExplainerPanelManager()
+
+    /// Opens the built-in rocket engine demo (Settings > Visuals).
+    func showVisualExplainerDemo() {
+        visualExplainerPanelManager.showDemoRocketExplanation()
+    }
+
     // MARK: - Step-By-Step Guidance
 
     /// When on, "how do I…" answers walk through steps on screen in sync
