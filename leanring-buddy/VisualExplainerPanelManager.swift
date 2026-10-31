@@ -42,6 +42,8 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     var onLibraryRequested: (() -> Void)?
     var onLibraryEntrySelected: ((_ explanationID: String) -> Void)?
     var onLibraryEntryDeleted: ((_ explanationID: String) -> Void)?
+    /// The user pressed the Map button.
+    var onConceptMapRequested: (() -> Void)?
     var onExplainerClosed: (() -> Void)?
 
     var isExplainerVisible: Bool {
@@ -112,6 +114,12 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     func showLibrary(entriesJSON: String) {
         bringPanelToFront()
         evaluateRendererScript("heySonaExplainer.showLibrary(\(entriesJSON))")
+    }
+
+    /// `graphJSON` comes from `ExplanationLibraryStore.conceptGraphJSON()`.
+    func showConceptMap(graphJSON: String) {
+        bringPanelToFront()
+        evaluateRendererScript("heySonaExplainer.showConceptMap(\(graphJSON))")
     }
 
     func goToStep(_ stepIndex: Int) {
@@ -235,6 +243,8 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
             closeExplainer()
         case "libraryRequested":
             onLibraryRequested?()
+        case "conceptMapRequested":
+            onConceptMapRequested?()
         case "libraryEntrySelected":
             if let explanationID = messageBody["id"] as? String {
                 onLibraryEntrySelected?(explanationID)

@@ -242,6 +242,26 @@
       margin-bottom: 3px;
     }
 
+    .scene-card.is-code .scene-card-body {
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: #d7e3ff;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .concept-map-panel { background: #1a1c1b; width: min(760px, calc(100% - 32px)); height: calc(100% - 32px); max-height: none; display: flex; flex-direction: column; }
+    .concept-map-panel[hidden] { display: none; }
+    #concept-map-content { flex: 1; min-height: 0; position: relative; }
+    #concept-map-content svg { width: 100%; height: 100%; display: block; }
+    .concept-map-legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-tertiary); padding-top: 8px; }
+    .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+    .legend-dot.is-topic { background: var(--accent); }
+    .legend-dot.is-related { background: #6b736f; }
+    .concept-node-topic { cursor: pointer; }
+    .concept-node-topic:hover circle { stroke: #ffffff; stroke-width: 2; }
+
     .scene-card-body {
       font-size: 12px;
       line-height: 1.4;
@@ -342,6 +362,7 @@
       <div id="scene-title">heySona</div>
       <div id="step-counter"></div>
       <button class="header-button" id="quiz-button" title="Check your understanding" hidden>Quiz</button>
+      <button class="header-button" id="concept-map-button" title="How everything you've learned connects">Map</button>
       <button class="header-button" id="library-button" title="Saved explanations">Library</button>
     </div>
 
@@ -356,6 +377,19 @@
           <button class="panel-close-button" id="quiz-close-button" title="Close quiz">✕</button>
         </div>
         <div id="quiz-content"></div>
+      </div>
+
+      <!-- Concept map: every topic learned and how the ideas connect. -->
+      <div class="stage-panel concept-map-panel" id="concept-map-panel" hidden>
+        <div class="stage-panel-header">
+          <div class="stage-panel-title">How your ideas connect</div>
+          <button class="panel-close-button" id="concept-map-close-button" title="Close map">✕</button>
+        </div>
+        <div id="concept-map-content"></div>
+        <div class="concept-map-legend">
+          <span><i class="legend-dot is-topic"></i>Topics you've learned (click to replay)</span>
+          <span><i class="legend-dot is-related"></i>Related ideas</span>
+        </div>
       </div>
 
       <!-- Library: explanations saved on this Mac. -->

@@ -140,6 +140,12 @@ struct SettingsView: View {
                             action: { companionManager.showVisualExplanationLibrary() }
                         )
                         SettingsCapsuleButton(
+                            title: "Concept map",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showConceptMap() }
+                        )
+                        SettingsCapsuleButton(
                             title: "Rocket demo",
                             isProminent: false,
                             isEnabled: true,

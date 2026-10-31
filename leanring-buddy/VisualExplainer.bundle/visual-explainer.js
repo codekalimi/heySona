@@ -26,7 +26,8 @@
     pipes), rect (size [w,h]), circle (radius), ring (innerRadius, outerRadius),
     line (points [[x,y,z], ...], width; straight segments, for graphs, axes,
     timelines; "drawn": false starts it invisible so "draw" can trace it),
-    card (title, text, width in pixels; an HTML text box anchored at position),
+    card (title, text, width in pixels; an HTML text box anchored at position;
+    "code": true shows the text as code in a monospace font),
     gear (radius, teeth, thickness, innerRadius, holeRadius; faces +z),
     capsule (radius, height; rounded ends), spring (radius, height, coils, wireRadius).
   Optional top-level "quiz": [{ "question", "choices": [...], "answerIndex", "explanation" }]
@@ -67,11 +68,13 @@
     heySonaExplainer.play() / .pause()
     heySonaExplainer.setQuiz([...]) / .showQuiz() / .showLibrary([{ id, title, detail }])
     heySonaExplainer.continueScene()               follow-up steps are about to be appended
+    heySonaExplainer.showConceptMap({ nodes: [{ id, label, kind, explanationId }], links: [{ from, to }] })
     heySonaExplainer.markFinished()                narration finished (offers the quiz)
   Messages to Swift (window.webkit.messageHandlers.heySona):
     { type: "ready" } | { type: "stepStarted", index, narration } | { type: "finished" }
     { type: "close" } | { type: "playPauseRequested", isPlaying } | { type: "error", message }
     { type: "libraryRequested" } | { type: "libraryEntrySelected", id } | { type: "libraryEntryDeleted", id }
+    { type: "conceptMapRequested" }
     { type: "quizFinished", correctCount, questionCount }
 */
 
@@ -328,8 +331,15 @@
   /** A text card: an HTML box anchored to a point in the scene. */
   function makeCardElement(objectDescription) {
     const cardElement = document.createElement('div');
-    cardElement.className = 'scene-card';
-    cardElement.style.width = (Number(objectDescription.width) || 220) + 'px';
+    // "code": true shows the text as code (monospace, line breaks kept).
+    cardElement.className = 'scene-card' + (objectDescription.code ? ' is-code' : '');
+    // Code keeps its line breaks, so a code card grows to fit its longest line.
+    if (objectDescription.code) {
+      cardElement.style.minWidth = (Number(objectDescription.width) || 220) + 'px';
+      cardElement.style.maxWidth = '520px';
+    } else {
+      cardElement.style.width = (Number(objectDescription.width) || 220) + 'px';
+    }
     if (objectDescription.color) cardElement.style.setProperty('--card-accent', objectDescription.color);
     if (objectDescription.title) {
       const cardTitleElement = document.createElement('div');
@@ -1316,6 +1326,7 @@
   /** Entries look like { id, title, detail }. */
   function showLibrary(libraryEntries) {
     quizPanel.hidden = true;
+    document.getElementById('concept-map-panel').hidden = true;
     libraryPanel.hidden = false;
     libraryContentElement.innerHTML = '';
     const entries = asArray(libraryEntries);
@@ -1361,6 +1372,142 @@
 
   libraryButton.addEventListener('click', () => postToNative({ type: 'libraryRequested' }));
   document.getElementById('library-close-button').addEventListener('click', () => { libraryPanel.hidden = true; });
+
+  // ─── Concept map ────────────────────────────────────────────────────────
+
+  const conceptMapPanel = document.getElementById('concept-map-panel');
+  const conceptMapContentElement = document.getElementById('concept-map-content');
+
+  /**
+   * Graph: { nodes: [{ id, label, kind: "topic" | "related", explanationId? }],
+   *          links: [{ from, to }] }. Topic nodes replay their explanation.
+   * Laid out with a small force simulation, then drawn as SVG.
+   */
+  function showConceptMap(conceptGraph) {
+    quizPanel.hidden = true;
+    libraryPanel.hidden = true;
+    conceptMapPanel.hidden = false;
+    conceptMapContentElement.innerHTML = '';
+
+    const graphNodes = asArray(conceptGraph && conceptGraph.nodes).map((graphNode) => ({ ...graphNode }));
+    const graphLinks = asArray(conceptGraph && conceptGraph.links).filter((graphLink) =>
+      graphNodes.some((graphNode) => graphNode.id === graphLink.from) && graphNodes.some((graphNode) => graphNode.id === graphLink.to)
+    );
+    if (!graphNodes.length) {
+      const emptyElement = document.createElement('div');
+      emptyElement.className = 'library-empty';
+      emptyElement.textContent = 'Your map is empty. Ask heySona to explain a concept, and the ideas it covers will show up here, linked to everything else you learn.';
+      conceptMapContentElement.appendChild(emptyElement);
+      return;
+    }
+
+    const mapWidth = Math.max(300, conceptMapContentElement.clientWidth || 700);
+    const mapHeight = Math.max(240, conceptMapContentElement.clientHeight || 440);
+    const nodesById = new Map(graphNodes.map((graphNode) => [graphNode.id, graphNode]));
+
+    // Start nodes on a circle (topics) and near their topic (related ideas).
+    graphNodes.forEach((graphNode, nodeIndex) => {
+      const startAngle = (nodeIndex / graphNodes.length) * Math.PI * 2;
+      const startRadius = graphNode.kind === 'topic' ? Math.min(mapWidth, mapHeight) * 0.25 : Math.min(mapWidth, mapHeight) * 0.38;
+      graphNode.x = mapWidth / 2 + Math.cos(startAngle) * startRadius;
+      graphNode.y = mapHeight / 2 + Math.sin(startAngle) * startRadius;
+      graphNode.velocityX = 0;
+      graphNode.velocityY = 0;
+    });
+
+    // Force simulation: nodes repel, links pull together, everything drifts
+    // toward the center. A fixed number of rounds keeps it deterministic.
+    for (let simulationRound = 0; simulationRound < 320; simulationRound++) {
+      const coolingFactor = 1 - simulationRound / 320;
+      for (let firstIndex = 0; firstIndex < graphNodes.length; firstIndex++) {
+        for (let secondIndex = firstIndex + 1; secondIndex < graphNodes.length; secondIndex++) {
+          const firstNode = graphNodes[firstIndex];
+          const secondNode = graphNodes[secondIndex];
+          let deltaX = secondNode.x - firstNode.x;
+          let deltaY = secondNode.y - firstNode.y;
+          const distanceSquared = Math.max(80, deltaX * deltaX + deltaY * deltaY);
+          const repulsion = 5200 / distanceSquared;
+          const distance = Math.sqrt(distanceSquared);
+          deltaX /= distance; deltaY /= distance;
+          firstNode.velocityX -= deltaX * repulsion; firstNode.velocityY -= deltaY * repulsion;
+          secondNode.velocityX += deltaX * repulsion; secondNode.velocityY += deltaY * repulsion;
+        }
+      }
+      graphLinks.forEach((graphLink) => {
+        const fromNode = nodesById.get(graphLink.from);
+        const toNode = nodesById.get(graphLink.to);
+        const deltaX = toNode.x - fromNode.x;
+        const deltaY = toNode.y - fromNode.y;
+        const distance = Math.max(1, Math.hypot(deltaX, deltaY));
+        const pull = (distance - 95) * 0.012;
+        fromNode.velocityX += deltaX / distance * pull; fromNode.velocityY += deltaY / distance * pull;
+        toNode.velocityX -= deltaX / distance * pull; toNode.velocityY -= deltaY / distance * pull;
+      });
+      graphNodes.forEach((graphNode) => {
+        graphNode.velocityX += (mapWidth / 2 - graphNode.x) * 0.004;
+        graphNode.velocityY += (mapHeight / 2 - graphNode.y) * 0.004;
+        graphNode.x += graphNode.velocityX * coolingFactor;
+        graphNode.y += graphNode.velocityY * coolingFactor;
+        graphNode.velocityX *= 0.6; graphNode.velocityY *= 0.6;
+        graphNode.x = Math.max(70, Math.min(mapWidth - 70, graphNode.x));
+        graphNode.y = Math.max(24, Math.min(mapHeight - 40, graphNode.y));
+      });
+    }
+
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    const mapSvg = document.createElementNS(svgNamespace, 'svg');
+    mapSvg.setAttribute('viewBox', '0 0 ' + mapWidth + ' ' + mapHeight);
+
+    graphLinks.forEach((graphLink) => {
+      const fromNode = nodesById.get(graphLink.from);
+      const toNode = nodesById.get(graphLink.to);
+      const linkLine = document.createElementNS(svgNamespace, 'line');
+      linkLine.setAttribute('x1', fromNode.x); linkLine.setAttribute('y1', fromNode.y);
+      linkLine.setAttribute('x2', toNode.x); linkLine.setAttribute('y2', toNode.y);
+      linkLine.setAttribute('stroke', fromNode.kind === 'topic' && toNode.kind === 'topic' ? 'rgba(51,128,255,0.7)' : 'rgba(107,115,111,0.55)');
+      linkLine.setAttribute('stroke-width', fromNode.kind === 'topic' && toNode.kind === 'topic' ? '2' : '1.2');
+      mapSvg.appendChild(linkLine);
+    });
+
+    graphNodes.forEach((graphNode) => {
+      const isTopic = graphNode.kind === 'topic';
+      const nodeGroup = document.createElementNS(svgNamespace, 'g');
+      if (isTopic && graphNode.explanationId) {
+        nodeGroup.setAttribute('class', 'concept-node-topic');
+        nodeGroup.addEventListener('click', () => {
+          conceptMapPanel.hidden = true;
+          postToNative({ type: 'libraryEntrySelected', id: String(graphNode.explanationId) });
+        });
+        const tooltip = document.createElementNS(svgNamespace, 'title');
+        tooltip.textContent = 'Replay: ' + graphNode.label;
+        nodeGroup.appendChild(tooltip);
+      }
+      const nodeCircle = document.createElementNS(svgNamespace, 'circle');
+      nodeCircle.setAttribute('cx', graphNode.x); nodeCircle.setAttribute('cy', graphNode.y);
+      nodeCircle.setAttribute('r', isTopic ? 9 : 5);
+      nodeCircle.setAttribute('fill', isTopic ? '#3380ff' : '#6b736f');
+      const nodeLabel = document.createElementNS(svgNamespace, 'text');
+      nodeLabel.setAttribute('x', graphNode.x); nodeLabel.setAttribute('y', graphNode.y + (isTopic ? 24 : 18));
+      nodeLabel.setAttribute('text-anchor', 'middle');
+      nodeLabel.setAttribute('fill', isTopic ? '#eceeed' : '#adb5b2');
+      nodeLabel.setAttribute('font-size', isTopic ? '12.5' : '11');
+      nodeLabel.setAttribute('font-weight', isTopic ? '600' : '400');
+      nodeLabel.setAttribute('font-family', '-apple-system, sans-serif');
+      // A dark outline behind the text keeps labels readable over link lines.
+      nodeLabel.setAttribute('stroke', '#1a1c1b');
+      nodeLabel.setAttribute('stroke-width', '4');
+      nodeLabel.setAttribute('stroke-linejoin', 'round');
+      nodeLabel.setAttribute('paint-order', 'stroke');
+      nodeLabel.textContent = String(graphNode.label);
+      nodeGroup.append(nodeCircle, nodeLabel);
+      mapSvg.appendChild(nodeGroup);
+    });
+
+    conceptMapContentElement.appendChild(mapSvg);
+  }
+
+  document.getElementById('concept-map-button').addEventListener('click', () => postToNative({ type: 'conceptMapRequested' }));
+  document.getElementById('concept-map-close-button').addEventListener('click', () => { conceptMapPanel.hidden = true; });
 
   // ─── Render loop ────────────────────────────────────────────────────────
 
@@ -1573,6 +1720,7 @@
     setQuiz,
     showQuiz,
     showLibrary,
+    showConceptMap,
     /** A follow-up question is adding steps to this finished scene. */
     continueScene() {
       explainerState.stepsStillStreaming = true;

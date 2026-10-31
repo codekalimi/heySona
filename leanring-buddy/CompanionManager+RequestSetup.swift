@@ -48,6 +48,12 @@ extension CompanionManager {
         }
 
         if isVisualExplanationEnabled {
+            // Topics already explained, so answers can build on them ("this
+            // works like the hash map you learned"). Sent in the user message
+            // to keep the system prompt cacheable.
+            if let learnedTopicsDescription = ExplanationLibraryStore.learnedTopicsDescription() {
+                userMessageContextLines.append("topics the user has already learned with heySona (connect to them when it helps): \(learnedTopicsDescription)")
+            }
             systemPrompt += VisualExplanationSession.mainReplySystemPromptSection
             if let openVisualExplanation, visualExplainerPanelManager.isExplainerVisible {
                 systemPrompt += VisualExplanationSession.followUpMainReplySystemPromptSection(openSceneTitle: openVisualExplanation.title)
