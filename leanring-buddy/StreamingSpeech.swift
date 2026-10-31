@@ -300,6 +300,13 @@ final class StreamingReplySpeaker {
     var onSegmentStarted: ((_ segmentText: String) -> Void)?
     /// The voice reached a step's sentence.
     var onGuidanceStepReached: ((_ guidanceStep: GuidanceStep) -> Void)?
+    /// The voice reached the sentence a drawing tag follows, so the circle,
+    /// box, arrow, or underline appears on the real screen as it's spoken.
+    var onDrawingReached: ((_ screenDrawing: ScreenDrawing) -> Void)?
+    /// Number of drawing tags handled while speaking; when above zero the
+    /// reply's drawings must not be drawn again at the end.
+    private(set) var liveDrawingCount = 0
+    private let isLiveDrawingEnabled: Bool
     var onFirstAudioStarted: (() -> Void)? {
         get { player.onFirstAudioStarted }
         set { player.onFirstAudioStarted = newValue }
@@ -308,10 +315,16 @@ final class StreamingReplySpeaker {
     /// True once at least one sentence was actually voiced.
     var didSpeakAnything: Bool { player.playedSegmentCount > 0 }
 
-    init(elevenLabsTTSClient: ElevenLabsTTSClient, screenCaptures: [CompanionScreenCapture], isStepGuidanceEnabled: Bool) {
+    init(
+        elevenLabsTTSClient: ElevenLabsTTSClient,
+        screenCaptures: [CompanionScreenCapture],
+        isStepGuidanceEnabled: Bool,
+        isLiveDrawingEnabled: Bool = false
+    ) {
         self.player = StreamingSpeechPlayer(elevenLabsTTSClient: elevenLabsTTSClient)
         self.screenCaptures = screenCaptures
         self.isStepGuidanceEnabled = isStepGuidanceEnabled
+        self.isLiveDrawingEnabled = isLiveDrawingEnabled
     }
 
     /// Call with the full text received so far, as it streams.
@@ -341,9 +354,21 @@ final class StreamingReplySpeaker {
                     self?.onSegmentStarted?(segmentText)
                 }
             case .tag(let tagText):
-                // Only step tags matter while speaking; everything else
-                // ([POINT], drawings, [VISUAL]) is handled once the reply ends.
-                guard isStepGuidanceEnabled, tagText.uppercased().hasPrefix("[STEP:"),
+                // Drawing tags appear with the sentence before them.
+                let uppercasedTagText = tagText.uppercased()
+                if isLiveDrawingEnabled,
+                   ["[CIRCLE:", "[BOX:", "[ARROW:", "[UNDERLINE:"].contains(where: { uppercasedTagText.hasPrefix($0) }) {
+                    if let liveDrawing = ScreenDrawingTagParser.extractDrawings(from: tagText, screenCaptures: screenCaptures).drawings.first {
+                        liveDrawingCount += 1
+                        player.attachToLatestSegment { [weak self] in
+                            self?.onDrawingReached?(liveDrawing)
+                        }
+                    }
+                    continue
+                }
+                // Steps also play with their sentence; [POINT] and [VISUAL]
+                // are handled once the reply ends.
+                guard isStepGuidanceEnabled, uppercasedTagText.hasPrefix("[STEP:"),
                       let parsedStep = StepGuidanceParser.extractSteps(from: tagText, screenCaptures: screenCaptures).steps.first else {
                     continue
                 }

@@ -383,10 +383,126 @@
     .step-dot:hover { background: var(--text-tertiary); }
     .step-dot.is-done { background: rgba(51, 128, 255, 0.45); }
     .step-dot.is-current { background: var(--accent); transform: scale(1.35); }
+
+    /* ── Glass layout ────────────────────────────────────────────────────
+       The window is frosted glass (NSVisualEffectView) behind this page.
+       The stage fills it; the title, controls, and subtitles float on top,
+       and the chrome fades away while the explanation plays. */
+    html, body { background: transparent; }
+    #explainer { position: relative; display: block; height: 100%; }
+    #stage {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 42%, rgba(51, 128, 255, 0.07), transparent 65%);
+    }
+    #drag-handle {
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      width: 38px;
+      height: 4px;
+      margin-left: -19px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.18);
+      z-index: 6;
+      pointer-events: none;
+    }
+    #header {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 5;
+      padding: 18px 18px 18px;
+      border-bottom: none;
+      background: linear-gradient(to bottom, rgba(8, 10, 12, 0.5), transparent);
+      transition: opacity 0.5s ease;
+    }
+    #scene-title { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+    #step-counter { display: none; }
+    .header-button { height: 24px; font-size: 11px; background: rgba(20, 22, 24, 0.45); }
+    #caption {
+      position: absolute;
+      left: 50%;
+      bottom: 54px;
+      transform: translateX(-50%);
+      z-index: 4;
+      width: max-content;
+      max-width: min(640px, calc(100% - 64px));
+      min-height: 0;
+      padding: 7px 14px;
+      border-radius: 12px;
+      background: rgba(8, 10, 12, 0.5);
+      -webkit-backdrop-filter: blur(12px);
+      font-size: 14px;
+      line-height: 1.4;
+      text-align: center;
+      pointer-events: none;
+    }
+    #caption:empty { display: none; }
+    #controls {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 5;
+      padding: 10px 16px 14px;
+      transition: opacity 0.5s ease;
+    }
+    .control-button { width: 28px; height: 28px; font-size: 11px; background: rgba(20, 22, 24, 0.5); -webkit-backdrop-filter: blur(10px); }
+    .step-dot { transform: scale(0.75); }
+    /* While playing and the mouse is still, only the explanation shows. */
+    body.is-idle #header, body.is-idle #controls { opacity: 0; }
+    /* The quiz is a small card in the corner, not a modal over the scene. */
+    #quiz-panel {
+      top: auto;
+      left: auto;
+      right: 16px;
+      bottom: 54px;
+      transform: none;
+      width: min(340px, calc(100% - 32px));
+      max-height: 62%;
+      background: rgba(16, 18, 20, 0.86);
+      -webkit-backdrop-filter: blur(18px);
+    }
+    #quiz-panel .stage-panel-title { font-size: 13px; }
+    /* Cards ease in with a small spring instead of popping. */
+    .scene-card { animation: scene-card-enter 0.55s cubic-bezier(0.2, 0.9, 0.25, 1.15); }
+    @keyframes scene-card-enter {
+      from { transform: translate(-50%, -50%) scale(0.93); }
+      to { transform: translate(-50%, -50%) scale(1); }
+    }
+    #presenter-pointer {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 22px;
+      height: 22px;
+      margin: -2px 0 0 -2px;
+      fill: #3380ff;
+      stroke: rgba(255, 255, 255, 0.9);
+      stroke-width: 1.4;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 0 6px rgba(51, 128, 255, 0.85));
+      opacity: 0;
+      transition: opacity 0.35s ease;
+      pointer-events: none;
+      z-index: 3;
+    }
+    #presenter-pointer.is-visible { opacity: 1; }
+    /* Compact: a small diagram docked beside the user's app. */
+    body.is-compact #header { padding: 14px 12px 10px; }
+    body.is-compact #scene-title { font-size: 11.5px; }
+    body.is-compact #concept-map-button, body.is-compact #library-button { display: none; }
+    body.is-compact #caption { bottom: 46px; font-size: 12.5px; padding: 6px 11px; max-width: calc(100% - 32px); }
+    body.is-compact #controls { padding: 8px 10px 10px; }
+    body.is-compact .control-button { width: 24px; height: 24px; font-size: 10px; }
+    body.is-compact .scene-label-text { font-size: 11px; }
   </style>
 </head>
 <body>
   <div id="explainer">
+    <div id="drag-handle"></div>
     <div id="header">
       <div id="scene-title">heySona</div>
       <div id="step-counter"></div>
@@ -397,6 +513,8 @@
 
     <div id="stage">
       <div id="label-layer"></div>
+      <!-- Presenter pointer: glides to whatever the narration just mentioned. -->
+      <svg id="presenter-pointer" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 2 L20 11 L12 13 L9 21 Z"/></svg>
       <div id="loading-message">Preparing the explanation…</div>
 
       <!-- Live sliders: drag to change a value and watch the scene react. -->

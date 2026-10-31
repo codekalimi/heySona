@@ -759,12 +759,16 @@ final class CompanionManager: ObservableObject {
                     ? StreamingReplySpeaker(
                         elevenLabsTTSClient: elevenLabsTTSClient,
                         screenCaptures: screenCaptures,
-                        isStepGuidanceEnabled: isStepGuidanceEnabled
+                        isStepGuidanceEnabled: isStepGuidanceEnabled,
+                        isLiveDrawingEnabled: isScreenDrawingEnabled
                     )
                     : nil
                 currentStreamingReplySpeaker = streamingReplySpeaker
                 streamingReplySpeaker?.onFirstAudioStarted = { [weak self] in
                     self?.voiceState = .responding
+                }
+                streamingReplySpeaker?.onDrawingReached = { [weak self] liveDrawing in
+                    self?.addScreenDrawingWhileSpeaking(liveDrawing)
                 }
                 streamingReplySpeaker?.onSegmentStarted = { [weak self] segmentText in
                     guard let self, self.isLiveCaptionsEnabled else { return }
@@ -819,15 +823,20 @@ final class CompanionManager: ObservableObject {
                 // that scene; [VISUAL:...] starts a new one.
                 let followUpExtraction = VisualExplanationSession.extractVisualFollowUpBrief(from: waitForClickExtraction.textWithoutTag)
                 let visualExplanationFollowUpBrief = isVisualExplanationEnabled && openVisualExplanation != nil ? followUpExtraction.brief : nil
-                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: followUpExtraction.textWithoutTag)
+                let dockExtraction = VisualExplanationSession.extractVisualDockBrief(from: followUpExtraction.textWithoutTag)
+                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: dockExtraction.textWithoutTag)
                 let isVisualExplanationFollowUp = visualExplanationFollowUpBrief != nil
-                let visualExplanationBrief = visualExplanationFollowUpBrief ?? (isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil)
+                let dockedVisualExplanationBrief = isVisualExplanationEnabled && !isVisualExplanationFollowUp ? dockExtraction.brief : nil
+                let isVisualExplanationDocked = dockedVisualExplanationBrief != nil
+                let visualExplanationBrief = visualExplanationFollowUpBrief ?? dockedVisualExplanationBrief ?? (isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil)
 
                 let drawingExtraction = ScreenDrawingTagParser.extractDrawings(
                     from: visualExplanationExtraction.textWithoutTag,
                     screenCaptures: screenCaptures
                 )
-                if isScreenDrawingEnabled && !drawingExtraction.drawings.isEmpty {
+                // Drawings already drawn while speaking aren't drawn twice.
+                let didDrawWhileSpeaking = (streamingReplySpeaker?.liveDrawingCount ?? 0) > 0
+                if isScreenDrawingEnabled && !drawingExtraction.drawings.isEmpty && !didDrawWhileSpeaking {
                     showScreenDrawings(drawingExtraction.drawings)
                 }
 
@@ -935,6 +944,7 @@ final class CompanionManager: ObservableObject {
                             brief: visualExplanationBrief,
                             userQuestion: transcript,
                             isFollowUp: isVisualExplanationFollowUp,
+                            isDockedBesideUserWindow: isVisualExplanationDocked,
                             waitForLeadInToFinish: { await streamingReplySpeaker.waitUntilFinished() }
                         )
                     }
@@ -974,7 +984,7 @@ final class CompanionManager: ObservableObject {
                 // Text-only replies: start the visual explanation after the
                 // lead-in is shown. (Streaming replies started it above.)
                 if streamingReplySpeaker == nil, let visualExplanationBrief, !Task.isCancelled {
-                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript, isFollowUp: isVisualExplanationFollowUp)
+                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript, isFollowUp: isVisualExplanationFollowUp, isDockedBesideUserWindow: isVisualExplanationDocked)
                 }
 
                 if shouldWaitForClickAfterReply && !Task.isCancelled {

@@ -33,6 +33,9 @@
     capsule (radius, height; rounded ends), spring (radius, height, coils, wireRadius).
   Any action can have "delay": seconds, so one step plays in sequence
   (swap, then swap, then highlight) instead of all at once.
+  Any action can have "at": "word" — a word or phrase from the step's
+  narration; the action fires when the voice says it (timed from the
+  narration's length, see startNarrationClock). "delay" adds to it.
 
   Live sliders: { "do": "slider", "id": "lr", "label": "Learning rate", "min": 0.01,
   "max": 1, "step": 0.01, "value": 0.1 } shows a slider; its id is a variable.
@@ -89,6 +92,7 @@
     heySonaExplainer.continueScene()               follow-up steps are about to be appended
     heySonaExplainer.showConceptMap({ nodes: [{ id, label, kind, explanationId }], links: [{ from, to }] })
     heySonaExplainer.replaceStep(index, step)       swap in a corrected step (visual self-check)
+    heySonaExplainer.startNarrationClock(index, seconds)  narration audio for that step started
     heySonaExplainer.markFinished()                narration finished (offers the quiz)
   Messages to Swift (window.webkit.messageHandlers.heySona):
     { type: "ready" } | { type: "stepStarted", index, narration } | { type: "finished" }
@@ -201,7 +205,31 @@
     secondsUntilLayoutCheck: null,
     /** When the user last dragged or zoomed (auto-reframing waits for them). */
     lastUserCameraInteractionTime: -Infinity,
+    /** The step whose actions are being applied (also while replaying earlier steps). */
+    stepIndexBeingApplied: -1,
+    /** Pending timers that show the caption one sentence at a time. */
+    captionSentenceTimers: [],
+    /** Word-timed actions ("at") waiting for the narration's length:
+        { action, speechFraction } where speechFraction is where the word
+        sits in the narration (0-1). */
+    actionsAwaitingNarrationClock: [],
+    /** Seconds before word-timed actions use an estimated speaking time
+        because no narration timing arrived; null when not waiting. */
+    secondsUntilNarrationClockFallback: null,
+    /** What the presenter pointer is moving to: { objectId } or { point }. */
+    presenterTarget: null,
+    presenterScreenPosition: null,
   };
+
+  /** Scene budget: cards and labels not mentioned for this many steps fade
+      out, and at most this many cards stay on screen, so the stage never
+      turns into a collage of old slides. */
+  const stepsBeforeUnmentionedItemsFade = 2;
+  /** Pixels at the top and bottom of the stage kept clear of cards and labels
+      for the floating title, subtitles, and controls. */
+  const floatingChromeTopInset = 44;
+  const floatingChromeBottomInset = 100;
+  const maximumVisibleCardCount = 4;
   threeScene.add(explainerState.sceneObjectsGroup);
 
   /** Where the camera orbits from. Position = target + spherical(azimuth, polar, distance). */
@@ -229,6 +257,12 @@
 
   function degreesToRadians(degrees) {
     return (Number(degrees) || 0) * Math.PI / 180;
+  }
+
+  /** Settles with a small overshoot, like a spring. */
+  function easeOutSpring(progress) {
+    const overshoot = 1.2;
+    return 1 + (overshoot + 1) * Math.pow(progress - 1, 3) + overshoot * Math.pow(progress - 1, 2);
   }
 
   function easeInOutCubic(progress) {
@@ -802,6 +836,7 @@
       /** A card's title, equation, and text; "update" changes them. */
       cardContent: isCard ? initialCardContent(objectDescription) : null,
       plotMarkerMeshes: [],
+      lastMentionedStepIndex: isAddedByStep ? explainerState.stepIndexBeingApplied : -1,
       isAddedByStep: Boolean(isAddedByStep),
       initialColor: new THREE.Color(objectDescription.color || '#8fa3c7'),
       currentBaseColor: new THREE.Color(objectDescription.color || '#8fa3c7'),
@@ -885,6 +920,7 @@
       labelRecord = { element: labelElement };
       explainerState.labelRecordsByKey.set(labelKey, labelRecord);
     }
+    labelRecord.lastMentionedStepIndex = explainerState.stepIndexBeingApplied;
     labelRecord.labelText = String(labelText);
     labelRecord.labelMath = labelMath ? String(labelMath) : null;
     renderLabelContent(labelRecord);
@@ -938,8 +974,10 @@
       labelRecord.element.style.left = Math.max(labelHalfWidth + 6, Math.min(stageWidth - labelHalfWidth - 6, labelLeft)) + 'px';
       // Keep the label inside the stage, then apply the layout self-check's
       // nudge (positive moves up) to where it's actually shown.
-      const clampedLabelTop = Math.max(labelHeight + 4, Math.min(stageHeight - 4, labelTop));
-      labelRecord.element.style.top = Math.max(labelHeight + 4, Math.min(stageHeight - 4, clampedLabelTop - (labelRecord.layoutNudgeInPixels || 0))) + 'px';
+      const lowestLabelTop = labelHeight + floatingChromeTopInset;
+      const highestLabelTop = stageHeight - floatingChromeBottomInset;
+      const clampedLabelTop = Math.max(lowestLabelTop, Math.min(highestLabelTop, labelTop));
+      labelRecord.element.style.top = Math.max(lowestLabelTop, Math.min(highestLabelTop, clampedLabelTop - (labelRecord.layoutNudgeInPixels || 0))) + 'px';
     }
   }
 
@@ -1191,7 +1229,15 @@
     const fitBox = new THREE.Box3();
     for (const objectId of objectIdsToFit) {
       const objectRecord = explainerState.objectRecordsById.get(objectId);
-      if (objectRecord) fitBox.expandByObject(objectRecord.mesh);
+      if (!objectRecord) continue;
+      if (objectRecord.cardElement) {
+        // Cards are HTML with no 3D size; count a card-sized area around its anchor.
+        const cardAnchor = objectRecord.mesh.getWorldPosition(new THREE.Vector3());
+        fitBox.expandByPoint(cardAnchor.clone().add(new THREE.Vector3(1.6, 0.9, 0)));
+        fitBox.expandByPoint(cardAnchor.clone().add(new THREE.Vector3(-1.6, -0.9, 0)));
+      } else {
+        fitBox.expandByObject(objectRecord.mesh);
+      }
     }
     if (fitBox.isEmpty()) return null;
 
@@ -1199,7 +1245,8 @@
     const verticalFieldOfView = perspectiveCamera.fov * Math.PI / 180;
     const horizontalFieldOfView = 2 * Math.atan(Math.tan(verticalFieldOfView / 2) * perspectiveCamera.aspect);
     const limitingFieldOfView = Math.min(verticalFieldOfView, horizontalFieldOfView);
-    const fittingDistance = boundingSphere.radius / Math.sin(limitingFieldOfView / 2) * 1.22;
+    // A little extra room for the floating title and subtitles.
+    const fittingDistance = boundingSphere.radius / Math.sin(limitingFieldOfView / 2) * 1.32;
 
     // Close-ups of small parts stay at least about a third of the way out,
     // so the surrounding model is still recognizable instead of filling the view.
@@ -1227,7 +1274,9 @@
       const viewWidth = orthographicCamera.right - orthographicCamera.left;
       const viewHeight = orthographicCamera.top - orthographicCamera.bottom;
       const fitSize = fitBox.getSize(new THREE.Vector3());
-      fittedRig.orthographicZoom = Math.max(0.3, Math.min(6, 0.9 * Math.min(viewWidth / Math.max(fitSize.x, 0.01), viewHeight / Math.max(fitSize.y, 0.01))));
+      fittedRig.orthographicZoom = Math.max(0.3, Math.min(6, 0.8 * Math.min(viewWidth / Math.max(fitSize.x, 0.01), viewHeight / Math.max(fitSize.y, 0.01))));
+      // Sit slightly high: the subtitles and controls take more room at the bottom.
+      fittedRig.target.y -= viewHeight / fittedRig.orthographicZoom * 0.04;
     }
     return fittedRig;
   }
@@ -1365,6 +1414,16 @@
     if (actionName !== 'unlabel' && actionName !== 'add') {
       targetIds.forEach((targetId) => {
         if (!explainerState.objectRecordsById.has(targetId)) explainerState.unknownIdsInCurrentStep.add(targetId);
+      });
+    }
+    if (!isInstant) pointPresenterAt(actionName, action, targetIds);
+
+    // Anything an action touches counts as mentioned now; a card the scene
+    // budget faded out comes back when it's mentioned again.
+    if (actionName !== 'hide' && actionName !== 'unlabel') {
+      targetRecords.forEach((objectRecord) => {
+        objectRecord.lastMentionedStepIndex = explainerState.stepIndexBeingApplied;
+        if (objectRecord.cardElement) objectRecord.isShown = true;
       });
     }
 
@@ -1523,6 +1582,9 @@
   /** Back to how the scene looked before step 1, with nothing animating. */
   function resetSceneToInitialState() {
     explainerState.pendingDelayedActions = [];
+    explainerState.actionsAwaitingNarrationClock = [];
+    explainerState.secondsUntilNarrationClockFallback = null;
+    explainerState.presenterTarget = null;
     removeAllEffects();
     removeAllLabels();
     hideSliders();
@@ -1595,8 +1657,72 @@
   /** Runs the actions still waiting, right away (moving on or finishing). */
   function finishDelayedActionsNow() {
     const waitingActions = explainerState.pendingDelayedActions;
+    const actionsStillWaitingForWords = explainerState.actionsAwaitingNarrationClock;
     explainerState.pendingDelayedActions = [];
+    explainerState.actionsAwaitingNarrationClock = [];
+    explainerState.secondsUntilNarrationClockFallback = null;
     waitingActions.forEach((waitingAction) => applyAction(waitingAction.action, true));
+    actionsStillWaitingForWords.forEach((waitingAction) => applyAction(waitingAction.action, true));
+  }
+
+  /** Starts a step's actions: ones with an "at" word wait for the narration
+      clock, the rest run now (or after their delay). */
+  function scheduleStepActions(step) {
+    explainerState.actionsAwaitingNarrationClock = [];
+    explainerState.secondsUntilNarrationClockFallback = null;
+    const narrationText = String(step.narration || '').toLowerCase();
+    let searchFromIndex = 0;
+    asArray(step.actions).forEach((action) => {
+      const spokenCue = action && typeof action.at === 'string' ? action.at.trim().toLowerCase() : '';
+      let cueIndex = spokenCue ? narrationText.indexOf(spokenCue, searchFromIndex) : -1;
+      if (spokenCue && cueIndex < 0) cueIndex = narrationText.indexOf(spokenCue);
+      if (cueIndex < 0) {
+        applyOrDelayAction(action);
+        return;
+      }
+      searchFromIndex = cueIndex + spokenCue.length;
+      explainerState.actionsAwaitingNarrationClock.push({
+        action,
+        speechFraction: narrationText.length ? cueIndex / narrationText.length : 0,
+      });
+    });
+    if (!explainerState.actionsAwaitingNarrationClock.length) return;
+    if (explainerState.autoAdvance) {
+      // No voice drives this window: time words by reading speed.
+      startNarrationClockForCurrentStep(estimatedSpeakingSeconds(step));
+    } else {
+      explainerState.secondsUntilNarrationClockFallback = 2;
+    }
+  }
+
+  function estimatedSpeakingSeconds(step) {
+    const wordCount = String(step.narration || '').split(/\s+/).filter(Boolean).length;
+    return Math.max(1.5, wordCount / 2.6);
+  }
+
+  /** Turns word-timed actions into timed ones for narration of this length,
+      and paces the subtitles to it. */
+  function startNarrationClockForCurrentStep(narrationSeconds) {
+    const waitingForWords = explainerState.actionsAwaitingNarrationClock;
+    explainerState.actionsAwaitingNarrationClock = [];
+    explainerState.secondsUntilNarrationClockFallback = null;
+    let lastFireSeconds = 0;
+    waitingForWords.forEach((waitingAction) => {
+      const fireSeconds = waitingAction.speechFraction * narrationSeconds + (Number(waitingAction.action.delay) || 0);
+      lastFireSeconds = Math.max(lastFireSeconds, fireSeconds);
+      if (fireSeconds <= 0.02) applyAction(waitingAction.action, false);
+      else explainerState.pendingDelayedActions.push({ action: waitingAction.action, remainingSeconds: Math.min(60, fireSeconds) });
+    });
+    if (waitingForWords.length) {
+      explainerState.secondsUntilLayoutCheck = Math.max(explainerState.secondsUntilLayoutCheck ?? 0, lastFireSeconds + 1.4);
+    }
+    const currentStep = explainerState.steps[explainerState.currentStepIndex];
+    if (currentStep) showCaption(currentStep.narration || '', narrationSeconds);
+  }
+
+  function startNarrationClock(stepIndex, narrationSeconds) {
+    if (stepIndex !== explainerState.currentStepIndex || !(narrationSeconds > 0)) return;
+    startNarrationClockForCurrentStep(Number(narrationSeconds));
   }
 
   function advanceDelayedActions(deltaSeconds) {
@@ -1623,6 +1749,7 @@
     } else {
       resetSceneToInitialState();
       for (let earlierStepIndex = 0; earlierStepIndex < stepIndex; earlierStepIndex++) {
+        explainerState.stepIndexBeingApplied = earlierStepIndex;
         asArray(steps[earlierStepIndex].actions).forEach((action) => applyAction(action, true));
       }
       for (const objectRecord of explainerState.objectRecordsById.values()) {
@@ -1632,7 +1759,9 @@
 
     explainerState.currentStepIndex = stepIndex;
     explainerState.unknownIdsInCurrentStep = new Set();
-    asArray(steps[stepIndex].actions).forEach(applyOrDelayAction);
+    explainerState.stepIndexBeingApplied = stepIndex;
+    scheduleStepActions(steps[stepIndex]);
+    applySceneBudget(stepIndex);
     // Check the layout once delayed actions, fades, and camera moves settle.
     const lastDelaySeconds = Math.max(0, ...asArray(steps[stepIndex].actions).map((action) => Number(action && action.delay) || 0));
     explainerState.secondsUntilLayoutCheck = Math.min(30, lastDelaySeconds) + 1.4;
@@ -1666,12 +1795,60 @@
     }
   }
 
-  function showCaption(captionText) {
-    captionElement.classList.add('is-changing');
-    setTimeout(() => {
-      captionElement.textContent = captionText;
-      captionElement.classList.remove('is-changing');
-    }, 180);
+  /** Fades out cards and labels the explanation has moved on from. */
+  function applySceneBudget(stepIndex) {
+    const oldestKeptStepIndex = stepIndex - stepsBeforeUnmentionedItemsFade;
+    const shownCards = [...explainerState.objectRecordsById.values()].filter((objectRecord) => objectRecord.cardElement && objectRecord.isShown);
+    shownCards.forEach((cardRecord) => {
+      if (cardRecord.lastMentionedStepIndex < oldestKeptStepIndex) cardRecord.isShown = false;
+    });
+    const stillShownCards = shownCards
+      .filter((cardRecord) => cardRecord.isShown)
+      .sort((firstCard, secondCard) => secondCard.lastMentionedStepIndex - firstCard.lastMentionedStepIndex);
+    stillShownCards.slice(maximumVisibleCardCount).forEach((cardRecord) => { cardRecord.isShown = false; });
+
+    for (const [labelKey, labelRecord] of explainerState.labelRecordsByKey) {
+      if ((labelRecord.lastMentionedStepIndex ?? -1) < oldestKeptStepIndex) hideLabel(labelKey);
+    }
+    refreshObjectTargetOpacities();
+  }
+
+  /** Splits narration into sentences, merging very short ones. */
+  function captionSentences(captionText) {
+    const rawSentences = String(captionText).match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [String(captionText)];
+    const mergedSentences = [];
+    rawSentences.map((sentence) => sentence.trim()).filter(Boolean).forEach((sentence) => {
+      const previousSentence = mergedSentences[mergedSentences.length - 1];
+      if (previousSentence && previousSentence.length < 40) mergedSentences[mergedSentences.length - 1] = previousSentence + ' ' + sentence;
+      else mergedSentences.push(sentence);
+    });
+    return mergedSentences;
+  }
+
+  /** Shows the narration as a subtitle, one sentence at a time, paced at
+      about the speaking speed, so it reads like live captions. */
+  function showCaption(captionText, narrationSeconds) {
+    explainerState.captionSentenceTimers.forEach(clearTimeout);
+    explainerState.captionSentenceTimers = [];
+    const sentences = captionSentences(captionText);
+    const totalCharacterCount = Math.max(1, sentences.join(' ').length);
+    let charactersBeforeSentence = 0;
+    let sentenceStartMilliseconds = 0;
+    sentences.forEach((sentence, sentenceIndex) => {
+      // With the narration's real length, each sentence appears when the
+      // voice reaches it; otherwise at about speaking speed.
+      if (narrationSeconds > 0) sentenceStartMilliseconds = charactersBeforeSentence / totalCharacterCount * narrationSeconds * 1000;
+      charactersBeforeSentence += sentence.length + 1;
+      explainerState.captionSentenceTimers.push(setTimeout(() => {
+        captionElement.classList.add('is-changing');
+        explainerState.captionSentenceTimers.push(setTimeout(() => {
+          captionElement.textContent = sentence;
+          captionElement.classList.remove('is-changing');
+        }, sentenceIndex === 0 ? 120 : 180));
+      }, sentenceStartMilliseconds));
+      const sentenceWordCount = sentence.split(/\s+/).filter(Boolean).length;
+      sentenceStartMilliseconds += Math.max(1600, sentenceWordCount / 2.6 * 1000);
+    });
   }
 
   function refreshStepControls() {
@@ -2013,6 +2190,95 @@
   document.getElementById('concept-map-button').addEventListener('click', () => postToNative({ type: 'conceptMapRequested' }));
   document.getElementById('concept-map-close-button').addEventListener('click', () => { conceptMapPanel.hidden = true; });
 
+  // ─── Presenter pointer ──────────────────────────────────────────────────
+  // A small heySona-style pointer glides to whatever the narration just
+  // brought in or changed, like a teacher's pen on a whiteboard.
+
+  const presenterPointerElement = document.getElementById('presenter-pointer');
+
+  function pointPresenterAt(actionName, action, targetIds) {
+    let presenterTarget = null;
+    if (actionName === 'add') {
+      const firstAddedObject = asArray(action.objects ?? action.object)[0];
+      if (firstAddedObject && firstAddedObject.id) presenterTarget = { objectId: String(firstAddedObject.id) };
+    } else if (actionName === 'label') {
+      presenterTarget = action.position ? { point: vectorFrom(action.position, new THREE.Vector3()) } : (targetIds[0] ? { objectId: targetIds[0] } : null);
+    } else if (actionName === 'arrow') {
+      presenterTarget = Array.isArray(action.to) ? { point: vectorFrom(action.to, new THREE.Vector3()) } : (action.to ? { objectId: String(action.to) } : null);
+    } else if (actionName === 'flow') {
+      const lastPathStop = asArray(action.path).slice(-1)[0];
+      presenterTarget = Array.isArray(lastPathStop) ? { point: vectorFrom(lastPathStop, new THREE.Vector3()) } : (lastPathStop ? { objectId: String(lastPathStop) } : null);
+    } else if (['show', 'highlight', 'focus', 'move', 'draw', 'update', 'color', 'cutaway', 'spin', 'revolve'].includes(actionName) && targetIds[0]) {
+      presenterTarget = { objectId: targetIds[0] };
+    }
+    if (presenterTarget) explainerState.presenterTarget = presenterTarget;
+  }
+
+  /** Where the pointer's tip should be, in stage pixels, or null. */
+  function presenterTargetScreenPosition() {
+    const presenterTarget = explainerState.presenterTarget;
+    if (!presenterTarget) return null;
+    if (presenterTarget.objectId) {
+      const objectRecord = explainerState.objectRecordsById.get(presenterTarget.objectId);
+      if (!objectRecord || !objectRecord.isShown) return null;
+      if (objectRecord.cardElement) {
+        // Point at a card's left edge, beside its title.
+        const cardLeft = parseFloat(objectRecord.cardElement.style.left) - objectRecord.cardElement.offsetWidth / 2;
+        const cardTop = parseFloat(objectRecord.cardElement.style.top) - objectRecord.cardElement.offsetHeight / 2;
+        // A card added this frame isn't placed yet; hold the pointer still.
+        if (!Number.isFinite(cardLeft) || !Number.isFinite(cardTop)) return explainerState.presenterScreenPosition;
+        return { x: cardLeft + 10, y: cardTop + 18 };
+      }
+      const objectCenter = resolvePoint(presenterTarget.objectId);
+      if (!objectCenter) return null;
+      return projectToStagePixels(objectCenter);
+    }
+    return projectToStagePixels(presenterTarget.point.clone());
+  }
+
+  function projectToStagePixels(worldPoint) {
+    const projectedPoint = worldPoint.project(activeCamera);
+    if (projectedPoint.z > 1) return null;
+    return {
+      x: (projectedPoint.x + 1) / 2 * stageElement.clientWidth,
+      y: (1 - projectedPoint.y) / 2 * stageElement.clientHeight,
+    };
+  }
+
+  function updatePresenterPointer(deltaSeconds) {
+    const targetPosition = explainerState.isPlaying ? presenterTargetScreenPosition() : null;
+    if (!targetPosition) {
+      presenterPointerElement.classList.remove('is-visible');
+      return;
+    }
+    if (!explainerState.presenterScreenPosition) {
+      // First appearance: start a little below the target and glide up.
+      explainerState.presenterScreenPosition = { x: targetPosition.x + 30, y: targetPosition.y + 40 };
+    }
+    const glideFactor = Math.min(1, deltaSeconds * 5);
+    const presenterPosition = explainerState.presenterScreenPosition;
+    presenterPosition.x += (targetPosition.x - presenterPosition.x) * glideFactor;
+    presenterPosition.y += (targetPosition.y - presenterPosition.y) * glideFactor;
+    presenterPointerElement.style.transform = 'translate(' + presenterPosition.x + 'px, ' + presenterPosition.y + 'px)';
+    presenterPointerElement.classList.add('is-visible');
+  }
+
+  // ─── Quiet chrome ───────────────────────────────────────────────────────
+  // While the explanation plays and the mouse is still, the title and
+  // controls fade out; moving the mouse brings them back.
+
+  let chromeIdleTimer = null;
+  function wakeChrome() {
+    document.body.classList.remove('is-idle');
+    clearTimeout(chromeIdleTimer);
+    chromeIdleTimer = setTimeout(() => {
+      const isPanelOpen = !quizPanel.hidden || !libraryPanel.hidden || !conceptMapPanel.hidden;
+      if (explainerState.isPlaying && !isPanelOpen) document.body.classList.add('is-idle');
+    }, 2500);
+  }
+  window.addEventListener('mousemove', wakeChrome);
+  window.addEventListener('keydown', wakeChrome);
+
   // ─── Layout self-check ──────────────────────────────────────────────────
   // After each step settles: find objects mostly off-screen, overlapping
   // labels and cards, ids that don't exist, and an empty frame. Fix what can
@@ -2066,13 +2332,22 @@
     const visibleCardCount = [...explainerState.objectRecordsById.values()].filter((objectRecord) => objectRecord.cardElement && objectRecord.isShown).length;
     if (!meshRecords.length && !visibleCardCount) foundIssues.push('nothing visible');
 
-    const offStageIds = meshRecords.filter((objectRecord) => shareOutsideStage(objectRecord) > 0.3).map((objectRecord) => objectRecord.id);
+    // Cards are pinned inside the stage, so check where their anchor really is.
+    const shownCardRecords = [...explainerState.objectRecordsById.values()].filter((objectRecord) => objectRecord.cardElement && objectRecord.isShown);
+    const isCardAnchorOffStage = (cardRecord) => {
+      const projectedAnchor = cardRecord.mesh.getWorldPosition(new THREE.Vector3()).project(activeCamera);
+      return Math.abs(projectedAnchor.x) > 0.95 || Math.abs(projectedAnchor.y) > 0.9;
+    };
+    const offStageIds = [
+      ...meshRecords.filter((objectRecord) => shareOutsideStage(objectRecord) > 0.3),
+      ...shownCardRecords.filter(isCardAnchorOffStage),
+    ].map((objectRecord) => objectRecord.id);
     if (offStageIds.length) {
       foundIssues.push('mostly off-screen: ' + offStageIds.join(', '));
       // Don't fight the user: skip reframing for a few seconds after they move the camera.
       const isUserMovingCamera = performance.now() - explainerState.lastUserCameraInteractionTime < 4000 || cameraRig.isUserDragging;
       if (!isUserMovingCamera) {
-        moveCamera({ fit: meshRecords.map((objectRecord) => objectRecord.id), seconds: 1.2 }, false);
+        moveCamera({ fit: [...meshRecords, ...shownCardRecords].map((objectRecord) => objectRecord.id), seconds: 1.2 }, false);
         foundIssues.push('fixed: reframed the camera');
       }
     }
@@ -2128,9 +2403,9 @@
     const moveTween = objectRecord.moveTween;
     if (moveTween) {
       moveTween.elapsedSeconds += deltaSeconds;
-      const easedProgress = easeInOutCubic(Math.min(1, moveTween.elapsedSeconds / moveTween.durationSeconds));
-      objectRecord.mesh.position.lerpVectors(moveTween.startPosition, moveTween.endPosition, easedProgress);
-      if (easedProgress >= 1) objectRecord.moveTween = null;
+      const moveProgress = Math.min(1, moveTween.elapsedSeconds / moveTween.durationSeconds);
+      objectRecord.mesh.position.lerpVectors(moveTween.startPosition, moveTween.endPosition, easeOutSpring(moveProgress));
+      if (moveProgress >= 1) objectRecord.moveTween = null;
     }
     if (objectRecord.revolveTurnsPerSecond && objectRecord.revolveCenter) {
       const revolveAngle = deltaSeconds * objectRecord.revolveTurnsPerSecond * Math.PI * 2;
@@ -2161,7 +2436,8 @@
     const cardCenterX = (projectedCardPosition.x + 1) / 2 * stageWidth;
     const cardCenterY = (1 - projectedCardPosition.y) / 2 * stageHeight;
     cardElement.style.left = Math.max(cardHalfWidth + 6, Math.min(stageWidth - cardHalfWidth - 6, cardCenterX)) + 'px';
-    cardElement.style.top = Math.max(cardHalfHeight + 6, Math.min(stageHeight - cardHalfHeight - 6, cardCenterY)) + 'px';
+    // Stay clear of the floating title (top) and subtitles and controls (bottom).
+    cardElement.style.top = Math.max(cardHalfHeight + floatingChromeTopInset, Math.min(stageHeight - cardHalfHeight - floatingChromeBottomInset, cardCenterY)) + 'px';
   }
 
   function resizeRendererToStage() {
@@ -2194,7 +2470,15 @@
   /** Moves every animation forward by `deltaSeconds` and draws one frame. */
   function advanceAndRender(deltaSeconds) {
     elapsedSceneSeconds += deltaSeconds;
+    if (explainerState.secondsUntilNarrationClockFallback !== null && explainerState.isPlaying) {
+      explainerState.secondsUntilNarrationClockFallback -= deltaSeconds;
+      if (explainerState.secondsUntilNarrationClockFallback <= 0) {
+        const currentStep = explainerState.steps[explainerState.currentStepIndex];
+        startNarrationClockForCurrentStep(currentStep ? estimatedSpeakingSeconds(currentStep) : 3);
+      }
+    }
     advanceDelayedActions(deltaSeconds);
+    updatePresenterPointer(deltaSeconds);
     if (explainerState.secondsUntilLayoutCheck !== null) {
       explainerState.secondsUntilLayoutCheck -= deltaSeconds;
       if (explainerState.secondsUntilLayoutCheck <= 0) {
@@ -2316,6 +2600,7 @@
       applyInitialCamera(true);
       captionElement.textContent = '';
       refreshStepControls();
+      wakeChrome();
       if (explainerState.steps.length) goToStep(0);
     } catch (loadError) {
       postToNative({ type: 'error', message: 'Could not load scene: ' + loadError.message });
@@ -2357,6 +2642,11 @@
     showQuiz,
     showLibrary,
     showConceptMap,
+    startNarrationClock,
+    /** Compact layout for a small diagram docked beside the user's window. */
+    setCompact(isCompact) {
+      document.body.classList.toggle('is-compact', Boolean(isCompact));
+    },
     /** Replaces a step (a visual self-check fix). Steps already shown keep
         their current look until replayed. */
     replaceStep(stepIndex, replacementStep) {

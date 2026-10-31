@@ -80,6 +80,8 @@ final class VisualExplanationSession {
     private let learnedTopicsDescription: String?
     /// Topic skills matched to the brief (recipes for drawing this subject).
     private let topicSkillsText: String?
+    /// A small diagram beside the user's window ([VISUAL_DOCK]).
+    private let isDockedBesideUserWindow: Bool
     private var sceneTitle = "Explanation"
 
     init(
@@ -91,8 +93,10 @@ final class VisualExplanationSession {
         explainerPanelManager: VisualExplainerPanelManager,
         isNarrationEnabled: Bool,
         learnedTopicsDescription: String? = nil,
-        topicSkillsText: String? = nil
+        topicSkillsText: String? = nil,
+        isDockedBesideUserWindow: Bool = false
     ) {
+        self.isDockedBesideUserWindow = isDockedBesideUserWindow
         self.learnedTopicsDescription = learnedTopicsDescription
         self.topicSkillsText = topicSkillsText
         self.source = source
@@ -216,6 +220,7 @@ final class VisualExplanationSession {
 
             Write the scene now, as JSON Lines.
             """) + learnedTopicsSection + (topicSkillsText.map { "\n\nTopic recipes to follow:\n" + $0 } ?? "")
+            + (isDockedBesideUserWindow ? Self.dockedScenePromptSection : "")
 
         do {
             _ = try await claudeAPI.analyzeImageStreaming(
@@ -431,9 +436,16 @@ final class VisualExplanationSession {
 
         guard let narrationAudio, (try? elevenLabsTTSClient.playSpeechAudio(narrationAudio)) != nil else {
             // No voice available: give the user time to read the caption.
-            try? await Task.sleep(nanoseconds: UInt64(max(3.0, Double(narrationText.count) / 15.0) * 1_000_000_000))
+            let readingSeconds = max(3.0, Double(narrationText.count) / 15.0)
+            explainerPanelManager.startNarrationClock(stepIndex: stepIndex, durationInSeconds: readingSeconds)
+            try? await Task.sleep(nanoseconds: UInt64(readingSeconds * 1_000_000_000))
             return
         }
+        // Actions tied to words ("at") fire as the voice reaches them.
+        explainerPanelManager.startNarrationClock(
+            stepIndex: stepIndex,
+            durationInSeconds: elevenLabsTTSClient.currentAudioDurationInSeconds
+        )
 
         // Wait for the audio to end, holding while the user has paused.
         while (elevenLabsTTSClient.isPlaying || isPausedByUser) && stepIndexRequestedByUser == nil {
@@ -496,6 +508,13 @@ final class VisualExplanationSession {
         return String(data: jsonData, encoding: .utf8)
     }
 
+    /// Added to the scene request for a [VISUAL_DOCK] diagram.
+    static let dockedScenePromptSection = """
+
+
+    This scene appears in a small window (about 480 by 360 points) docked beside the app the user is looking at, while they look at the real thing. Use mode 2d, 3 to 5 short steps, at most 5 objects on screen at a time, short labels, and the exact real values from the brief (their command, file names, numbers) so it's clearly about what's on their screen.
+    """
+
     /// Added to the authoring prompt when continuing an open scene.
     static let followUpAuthoringPromptSection = """
 
@@ -522,6 +541,22 @@ final class VisualExplanationSession {
         textWithoutTag = textWithoutTag
             .replacingOccurrences(of: "  ", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (textWithoutTag, brief.isEmpty ? nil : brief)
+    }
+
+    /// Finds a [VISUAL_DOCK:brief] tag (a small diagram docked beside the
+    /// user's window, about something on their screen) and removes it.
+    static func extractVisualDockBrief(from responseText: String) -> (textWithoutTag: String, brief: String?) {
+        guard let dockTagRegex = try? NSRegularExpression(pattern: #"\[VISUAL_DOCK:\s*([^\]]+?)\s*\]"#, options: [.caseInsensitive]),
+              let tagMatch = dockTagRegex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
+              let tagRange = Range(tagMatch.range, in: responseText),
+              let briefRange = Range(tagMatch.range(at: 1), in: responseText) else {
+            return (responseText, nil)
+        }
+        let brief = String(responseText[briefRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        var textWithoutTag = responseText
+        textWithoutTag.removeSubrange(tagRange)
+        textWithoutTag = textWithoutTag.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         return (textWithoutTag, brief.isEmpty ? nil : brief)
     }
 
@@ -556,6 +591,7 @@ final class VisualExplanationSession {
     visual explanations:
     you can open heySona's visual explainer: a window where an animated 3d model or 2d diagram is built and narrated step by step. use it when the user asks you to explain, show, teach, or visualize how something works, what's inside something, how a process unfolds, or how ideas connect, whenever seeing it would genuinely help (data structures, algorithms, math ideas, machine learning, neural networks, ai agents, how computers work, machines, science, history). the user is learning computer science, math, data structures and algorithms, machine learning, deep learning, and ai agents, so lean toward a visual for "how does it work" and "what is" questions about these. don't use it for quick facts, yes or no questions, or things on their screen you can simply point at.
     when you use it, your spoken reply is only a short, natural one-sentence lead-in like "sure, let me show you how a rocket engine works." the explainer gives the full explanation, so don't explain it yourself. then add this tag at the very end, before [POINT:none]: [VISUAL:a detailed brief for the explainer: what to explain, the level (a curious beginner, in simple english, unless they say otherwise), the parts or stages to cover in order, a real-world analogy that fits, a tiny concrete example to walk through (for example, five numbers to sort or a three-node network), and anything relevant from their screen or this conversation]. the brief must not contain square brackets.
+    when the question is about something on the user's screen (how this terminal works, what this code does, why this graph looks like that), explain right on their screen instead: talk through it while drawing on the real elements, and if a small diagram of the idea behind it would help, add [VISUAL_DOCK:a brief for a small diagram, using the exact values visible on screen, like their real command, file names, or numbers] before [POINT:...]. it opens as a compact diagram docked beside their window, not a big separate window. use [VISUAL:...] only for standalone topics that aren't about their screen.
     """
 
     // MARK: - Scene Authoring Prompt
@@ -611,7 +647,8 @@ final class VisualExplanationSession {
     - clearEffects: removes earlier arrows, flows, and plumes.
     - update: {"do":"update","target":"eqCard","math":"...","text":"...","title":"..."} changes a card's content with a soft transition: show an equation turning into the next form one step at a time, or a running total.
     - label also takes "math" instead of "text" for a short equation label: {"do":"label","position":[x,y,z],"math":"y = x^2"}.
-    TIMING: any action can have "delay" (seconds after the step starts), so one step plays as a sequence instead of all at once: compare, then swap, then highlight the next pair; or light up a network layer by layer (delays 0, 0.8, 1.6). Keep the last delay within the time the narration takes to speak (about 2.5 words per second), and describe the sequence in the narration in the same order.
+    TIMING TO SPEECH (makes it feel live, as if drawn while you talk): give every action that reveals or changes something an "at" field with the exact word or short phrase from that step's narration where it's mentioned, e.g. narration "your keystrokes go to the shell, which starts the program" with {"do":"add","objects":[…the shell…],"at":"shell"} and {"do":"flow",…,"at":"starts the program"}. The action fires the moment the voice says that word. Order "at" words as they appear in the narration; actions without "at" happen when the step begins (use that for camera moves and cleanup). "delay" (seconds) still works for sequences that have no words, like compare, swap, compare (delays 0, 0.8, 1.6), and it adds to "at".
+    Build scenes up as you talk: start each step with little on screen and let the "at" actions add and highlight things as they're named, instead of showing everything at once.
     Actions from earlier steps stay in effect (labels, flows, highlights) until you undo them, so tidy up: unlabel old labels and clearEffects when the focus moves on.
 
     LIVE SLIDERS (let the user play with the idea; use them whenever a number controls the behavior: learning rate, input size n, k in k-nearest neighbors, a probability, a function's coefficients, temperature, momentum):

@@ -16,6 +16,7 @@ extension CompanionManager {
     /// Opens the built-in rocket engine demo (Settings > Visuals).
     func showVisualExplainerDemo() {
         stopVisualExplanation()
+        visualExplainerPanelManager.setPlacement(.centered)
         openVisualExplanation = nil
         configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showDemoRocketExplanation()
@@ -23,6 +24,7 @@ extension CompanionManager {
 
     /// Opens the explainer window on the saved-explanations list.
     func showVisualExplanationLibrary() {
+        visualExplainerPanelManager.setPlacement(.centered)
         configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showPreparingStatus("Pick an explanation from your library.")
         visualExplainerPanelManager.showLibrary(entriesJSON: ExplanationLibraryStore.libraryEntriesJSON())
@@ -30,6 +32,7 @@ extension CompanionManager {
 
     /// Opens the explainer window on the concept map of everything learned.
     func showConceptMap() {
+        visualExplainerPanelManager.setPlacement(.centered)
         configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showPreparingStatus("Here's how the ideas you've learned connect.")
         visualExplainerPanelManager.showConceptMap(graphJSON: ExplanationLibraryStore.conceptGraphJSON())
@@ -42,10 +45,15 @@ extension CompanionManager {
         brief: String,
         userQuestion: String,
         isFollowUp: Bool = false,
+        isDockedBesideUserWindow: Bool = false,
         waitForLeadInToFinish: (() async -> Void)? = nil
     ) {
         stopVisualExplanation()
         configureVisualExplainerWindowCallbacks()
+        // Follow-ups stay wherever the open explanation is.
+        if !isFollowUp {
+            visualExplainerPanelManager.setPlacement(isDockedBesideUserWindow ? .dockedBesideFrontWindow : .centered)
+        }
 
         let explanationBeingFollowedUp = isFollowUp ? openVisualExplanation : nil
         print(explanationBeingFollowedUp == nil ? "🎬 Visual explanation requested: \(brief)" : "🎬 Visual follow-up requested: \(brief)")
@@ -61,7 +69,8 @@ extension CompanionManager {
             learnedTopicsDescription: ExplanationLibraryStore.learnedTopicsDescription(),
             topicSkillsText: SkillTools.userMessageSkillsText(
                 skillLibrary.skillsForVisualExplanation(briefAndQuestion: brief + " " + userQuestion)
-            )
+            ),
+            isDockedBesideUserWindow: isDockedBesideUserWindow
         )
         visualExplanationSession.onSceneFailed = { [weak self] spokenFailureMessage in
             guard let self else { return }
@@ -168,6 +177,7 @@ extension CompanionManager {
             return
         }
         stopVisualExplanation()
+        visualExplainerPanelManager.setPlacement(.centered)
         configureVisualExplainerWindowCallbacks()
         print("📚 Replaying \"\(savedExplanation.title)\"")
 
@@ -325,6 +335,19 @@ extension CompanionManager {
         screenDrawingsFadeOutTask?.cancel()
         screenDrawings = drawingsToShow
         print("✏️ Drawing \(drawingsToShow.count) annotation(s) on screen")
+    }
+
+    /// Adds one drawing as the voice reaches its sentence (live drawing on
+    /// the real screen). Keeps the newest few so the screen stays readable.
+    func addScreenDrawingWhileSpeaking(_ liveDrawing: ScreenDrawing) {
+        screenDrawingsFadeOutTask?.cancel()
+        var updatedDrawings = screenDrawings
+        updatedDrawings.append(liveDrawing)
+        if updatedDrawings.count > ScreenDrawingTagParser.maximumDrawingCount {
+            updatedDrawings.removeFirst(updatedDrawings.count - ScreenDrawingTagParser.maximumDrawingCount)
+        }
+        screenDrawings = updatedDrawings
+        print("✏️ Drew \(liveDrawing.label ?? "an annotation") while speaking")
     }
 
     func clearScreenDrawings() {
