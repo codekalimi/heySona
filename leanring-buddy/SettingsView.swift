@@ -16,6 +16,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 apiKeysSection
                 voiceSection
+                visualsSection
                 macActionsSection
                 LongTermMemorySettingsSection(
                     companionManager: companionManager,
@@ -79,6 +80,59 @@ struct SettingsView: View {
 
             ElevenLabsVoicePickerCard(companionManager: companionManager)
                 .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+        }
+    }
+
+    // MARK: - Visuals
+
+    private var visualsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsSectionTitle("VISUALS")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    settingsToggleRow(
+                        title: "Draw on screen",
+                        detail: "Circles, highlights, arrows, and underlines show you what heySona is talking about. They fade after the reply.",
+                        isOn: Binding(
+                            get: { companionManager.isScreenDrawingEnabled },
+                            set: { companionManager.setScreenDrawingEnabled($0) }
+                        )
+                    )
+
+                    settingsToggleRow(
+                        title: "Show captions",
+                        detail: "Shows the spoken reply as text next to your cursor while heySona talks.",
+                        isOn: Binding(
+                            get: { companionManager.isLiveCaptionsEnabled },
+                            set: { companionManager.setLiveCaptionsEnabled($0) }
+                        )
+                    )
+                    .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+                }
+            }
+        }
+    }
+
+    private func settingsToggleRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .pointerCursor()
         }
     }
 

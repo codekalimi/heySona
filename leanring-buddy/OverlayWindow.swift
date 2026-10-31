@@ -186,6 +186,12 @@ struct BlueCursorView: View {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
 
+            // Circles, boxes, arrows, and underlines Claude drew for this
+            // reply. Placed first so the cursor buddy stays on top of them.
+            ScreenDrawingLayerView(drawingsOnThisScreen: companionManager.screenDrawings.filter { screenDrawing in
+                screenFrame.contains(CGPoint(x: screenDrawing.displayFrame.midX, y: screenDrawing.displayFrame.midY))
+            })
+
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
                 Text(welcomeText)

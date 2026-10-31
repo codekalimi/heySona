@@ -188,6 +188,10 @@ final class CompanionManager: ObservableObject {
         // resolve correctly.
         var userMessageContextLines = ["current local time: \(Self.currentLocalTimeDescription())"]
 
+        if isScreenDrawingEnabled {
+            systemPrompt += ScreenDrawingTagParser.systemPromptSection
+        }
+
         if isMacActionsEnabled {
             systemPrompt += MacActionTools.systemPromptSection
             toolDefinitions += MacActionTools.toolDefinitionsForClaudeRequest
@@ -314,6 +318,95 @@ final class CompanionManager: ObservableObject {
         localTimeFormatter.dateStyle = .full
         localTimeFormatter.timeStyle = .short
         return "\(localTimeFormatter.string(from: Date())) (\(TimeZone.current.identifier))"
+    }
+
+    // MARK: - On-Screen Drawing And Captions
+
+    /// Drawings currently shown on the overlay. Each screen's overlay
+    /// renders the ones whose display frame matches it.
+    @Published private(set) var screenDrawings: [ScreenDrawing] = []
+    private var screenDrawingsFadeOutTask: Task<Void, Never>?
+    private var captionHideTask: Task<Void, Never>?
+
+    /// When on, Claude can circle, box, underline, and draw arrows on screen.
+    @Published private(set) var isScreenDrawingEnabled: Bool = UserDefaults.standard.object(forKey: "isScreenDrawingEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isScreenDrawingEnabled")
+
+    func setScreenDrawingEnabled(_ enabled: Bool) {
+        isScreenDrawingEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isScreenDrawingEnabled")
+        if !enabled {
+            clearScreenDrawings()
+        }
+    }
+
+    /// When on, the spoken reply is also shown as text next to the cursor.
+    @Published private(set) var isLiveCaptionsEnabled: Bool = UserDefaults.standard.object(forKey: "isLiveCaptionsEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isLiveCaptionsEnabled")
+
+    func setLiveCaptionsEnabled(_ enabled: Bool) {
+        isLiveCaptionsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLiveCaptionsEnabled")
+    }
+
+    private func showScreenDrawings(_ drawingsToShow: [ScreenDrawing]) {
+        screenDrawingsFadeOutTask?.cancel()
+        screenDrawings = drawingsToShow
+        print("✏️ Drawing \(drawingsToShow.count) annotation(s) on screen")
+    }
+
+    private func clearScreenDrawings() {
+        screenDrawingsFadeOutTask?.cancel()
+        screenDrawingsFadeOutTask = nil
+        guard !screenDrawings.isEmpty else { return }
+        withAnimation(.easeOut(duration: 0.3)) {
+            screenDrawings = []
+        }
+    }
+
+    /// Keeps drawings up while the reply is spoken (or read, when muted),
+    /// then fades them out so they don't linger over the user's work.
+    private func scheduleScreenDrawingsFadeOut() {
+        guard !screenDrawings.isEmpty else { return }
+        screenDrawingsFadeOutTask?.cancel()
+        screenDrawingsFadeOutTask = Task { [weak self] in
+            while self?.elevenLabsTTSClient.isPlaying == true {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            // Text-only replies need longer, since they're being read.
+            let secondsToKeepDrawingsAfterReply: UInt64 = self?.isSpokenReplyEnabled == true ? 4 : 8
+            try? await Task.sleep(nanoseconds: secondsToKeepDrawingsAfterReply * 1_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            withAnimation(.easeOut(duration: 0.6)) {
+                self.screenDrawings = []
+            }
+        }
+    }
+
+    /// Shows the spoken reply as a caption next to the cursor and hides it
+    /// shortly after the audio finishes.
+    private func showCaptionUntilSpeechEnds(captionText: String) {
+        responseOverlayManager.showOverlayAndBeginStreaming()
+        responseOverlayManager.updateStreamingText(captionText)
+
+        captionHideTask?.cancel()
+        captionHideTask = Task { [weak self] in
+            while self?.elevenLabsTTSClient.isPlaying == true {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            guard !Task.isCancelled else { return }
+            self?.responseOverlayManager.finishStreaming(afterDelayInSeconds: 1.5)
+        }
+    }
+
+    private func hideCaptionAndBubble() {
+        captionHideTask?.cancel()
+        captionHideTask = nil
+        responseOverlayManager.hideOverlay()
     }
 
     /// When off, replies are shown as a text bubble instead of spoken aloud.
@@ -700,7 +793,8 @@ final class CompanionManager: ObservableObject {
         // Cancel any in-progress response and TTS from a previous utterance
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
-        responseOverlayManager.hideOverlay()
+        hideCaptionAndBubble()
+        clearScreenDrawings()
         clearDetectedElementLocation()
 
         // Dismiss the onboarding prompt if it's showing
@@ -773,7 +867,8 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         elevenLabsTTSClient.stopPlayback()
-        responseOverlayManager.hideOverlay()
+        hideCaptionAndBubble()
+        clearScreenDrawings()
         clearDetectedElementLocation()
 
         if voiceState != .listening {
@@ -924,8 +1019,19 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
+                // Drawing tags come before the [POINT:...] tag, which must be
+                // last for its parser, so pull them out first. They're always
+                // removed from the text so they're never spoken.
+                let drawingExtraction = ScreenDrawingTagParser.extractDrawings(
+                    from: fullResponseText,
+                    screenCaptures: screenCaptures
+                )
+                if isScreenDrawingEnabled && !drawingExtraction.drawings.isEmpty {
+                    showScreenDrawings(drawingExtraction.drawings)
+                }
+
                 // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                let parseResult = Self.parsePointingCoordinates(from: drawingExtraction.textWithoutDrawingTags)
                 let spokenText = parseResult.spokenText
 
                 // Handle element pointing if Claude returned coordinates.
@@ -1010,11 +1116,15 @@ final class CompanionManager: ObservableObject {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
+                        if isLiveCaptionsEnabled {
+                            showCaptionUntilSpeechEnds(captionText: spokenText)
+                        }
                     } catch {
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
                 }
+                scheduleScreenDrawingsFadeOut()
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
@@ -1048,7 +1158,7 @@ final class CompanionManager: ObservableObject {
 
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor)
-            while detectedElementScreenLocation != nil {
+            while detectedElementScreenLocation != nil || !screenDrawings.isEmpty {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

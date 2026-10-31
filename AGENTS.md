@@ -60,6 +60,8 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 - *Project awareness*: `ActiveProjectContext` reads the frontmost window's `AXDocument` (Accessibility), walks up to the nearest `.git` (never the home folder itself), and falls back to a folder pinned in Settings. Project name, branch (read from `.git/HEAD`), and open file go in the user message; `list_project_files` / `read_project_file` are read-only, confined to the project root (symlinks and `..` resolved before checking), and skip dependency/build folders; reads cap at 200 KB.
 - *Notes*: `save_note` writes to Apple Notes (AppleScript; needs Automation permission, `NSAppleEventsUsageDescription`, and the `com.apple.security.automation.apple-events` entitlement), an Obsidian vault folder, or a Markdown folder (default `~/Documents/heySona Notes`). Markdown notes never overwrite an existing file.
 
+**On-Screen Drawing, Captions, And Visual Answers**: With "Draw on screen" on (Settings > Visuals, default on), `ScreenDrawingTagParser.systemPromptSection` asks Claude to point and draw whenever the question is about something visible. Claude appends `[CIRCLE:x,y,r:label:screenN]`, `[BOX:x,y,w,h:...]`, `[ARROW:x1,y1,x2,y2:...]`, `[UNDERLINE:...]` tags before the final `[POINT:...]` tag (no extra round trip, unlike a tool). `ScreenDrawingTagParser.extractDrawings` removes every drawing tag from the reply (always, so tags are never spoken), converts screenshot pixels to display points with the same scaling as pointing, caps at 6 drawings, and falls back to the cursor's screen for unknown screen numbers. `CompanionManager.screenDrawings` is rendered by `ScreenDrawingLayerView` inside each screen's `BlueCursorView`, sketched in one after another with `.trim` animations; labels are kept on screen. Drawings fade 4 s after speech ends (8 s for text-only replies) and are cleared on a new question or Esc; transient cursor mode waits for them. "Show captions" (default on) shows the spoken reply in the `CompanionResponseOverlayManager` bubble until 1.5 s after audio ends.
+
 **Transient Cursor Mode**: When "Show heySona" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
 ## Key Files
@@ -67,7 +69,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1350 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1440 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~280 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon (a template drawing of the heySona mark: pointer plus two sound waves), manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~720 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Haiku/Sonnet/Opus), permissions UI, onboarding Start button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
@@ -95,6 +97,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `PersonalContextTools.swift` | ~240 | Tool definitions, system prompt sections, and executor for memory, project files, and notes. |
 | `PersonalContextSettingsSections.swift` | ~310 | Settings sections for memory (fact list with delete), project (pinned folder), and notes (destination, folders). |
 | `scripts/generate-brand-assets.swift` | ~480 | Draws every brand asset from one geometry: the AppIcon PNGs (16-1024, with simplified waves at 64 px and below), `branding/heysona-mark.svg`, and `branding/heysona-logo-light.png` / `-dark.png`. Run from the repo root with `swift scripts/generate-brand-assets.swift`; never hand-edit the generated files. |
+| `ScreenDrawingAnnotations.swift` | ~330 | Drawing tags: model, parser (pixel to display-point conversion), system prompt section, and the animated SwiftUI overlay rendering (circles, boxes, arrows, underlines, labels). |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
@@ -102,7 +105,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `APIKeyKeychainStore.swift` | ~135 | Reads and saves the Anthropic, AssemblyAI, and ElevenLabs API keys in the macOS Keychain. |
 | `APIKeySetupPrompt.swift` | ~50 | On launch, shows an alert asking for any API key not yet saved in the Keychain. |
 | `SettingsWindowManager.swift` | ~60 | Creates and shows the Settings window (titled `NSWindow` hosting `SettingsView`). |
-| `SettingsView.swift` | ~430 | Settings UI: API keys, ElevenLabs voice picker with preview, Mac actions toggle, memory/project/notes sections, Claude model, and spoken-reply toggle. Its layout helpers (`settingsCard`, `settingsSectionTitle`, `SettingsCapsuleButton`) are shared. |
+| `SettingsView.swift` | ~430 | Settings UI: API keys, ElevenLabs voice picker with preview, Visuals toggles (draw on screen, captions), Mac actions toggle, memory/project/notes sections, Claude model, and spoken-reply toggle. Its layout helpers (`settingsCard`, `settingsSectionTitle`, `SettingsCapsuleButton`) are shared. |
 
 ## Build & Run
 
