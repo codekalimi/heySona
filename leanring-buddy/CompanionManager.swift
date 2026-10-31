@@ -208,9 +208,22 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     /// Older saved choices (Sonnet 4.6, Opus 4.6) map to the current model in
     /// the same family; see ClaudeModelCatalog.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") == ClaudeModelCatalog.autoModelChoiceID
-        ? ClaudeModelCatalog.autoModelChoiceID
-        : ClaudeModelCatalog.modelOption(forSavedModelID: UserDefaults.standard.string(forKey: "selectedClaudeModel")).modelID
+    /// Auto is the default. A model saved before Auto became the default is
+    /// switched to Auto once; picking a model afterwards is kept.
+    @Published var selectedModel: String = CompanionManager.initialSelectedModel()
+
+    private static func initialSelectedModel() -> String {
+        let userDefaults = UserDefaults.standard
+        if !userDefaults.bool(forKey: "didAdoptAutoModelAsDefault") {
+            userDefaults.set(true, forKey: "didAdoptAutoModelAsDefault")
+            userDefaults.set(ClaudeModelCatalog.autoModelChoiceID, forKey: "selectedClaudeModel")
+        }
+        let savedModelChoice = userDefaults.string(forKey: "selectedClaudeModel")
+        if savedModelChoice == nil || savedModelChoice == ClaudeModelCatalog.autoModelChoiceID {
+            return ClaudeModelCatalog.autoModelChoiceID
+        }
+        return ClaudeModelCatalog.modelOption(forSavedModelID: savedModelChoice).modelID
+    }
 
     /// `model` is a model ID or `ClaudeModelCatalog.autoModelChoiceID`.
     func setSelectedModel(_ model: String) {
