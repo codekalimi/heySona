@@ -43,25 +43,12 @@ final class CompanionManager: ObservableObject {
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
 
-    // MARK: - Onboarding Video State (shared across all screen overlays)
-
-    @Published var onboardingVideoPlayer: AVPlayer?
-    @Published var showOnboardingVideo: Bool = false
-    @Published var onboardingVideoOpacity: Double = 0.0
-    var onboardingVideoEndObserver: NSObjectProtocol?
-    var onboardingDemoTimeObserver: Any?
-
     // MARK: - Onboarding Prompt Bubble
 
-    /// Text streamed character-by-character on the cursor after the onboarding video ends.
+    /// Text streamed character-by-character on the cursor after the onboarding demo.
     @Published var onboardingPromptText: String = ""
     @Published var onboardingPromptOpacity: Double = 0.0
     @Published var showOnboardingPrompt: Bool = false
-
-    // MARK: - Onboarding Music
-
-    var onboardingMusicPlayer: AVAudioPlayer?
-    var onboardingMusicFadeTimer: Timer?
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
@@ -627,7 +614,6 @@ final class CompanionManager: ObservableObject {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
 
             prepareForNewInteraction()
 

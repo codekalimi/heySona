@@ -160,7 +160,6 @@ struct CompanionPanelView: View {
             }
             .buttonStyle(CompanionPanelActionStyle(isPrimary: true))
             .pointerCursor()
-            .disabled(companionManager.showOnboardingVideo)
         }
         .padding(.horizontal, 22)
         .padding(.bottom, 18)

@@ -111,7 +111,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `CompanionManager+GuidedMode.swift` | ~150 | Guided mode: `[WAIT_FOR_CLICK]` handling, waiting for the user's click, continuation rounds, limits, and stopping. |
 | `CompanionManager+Shortcuts.swift` | ~125 | Type-to-ask (double-tap control) and Esc-to-stop hot key. |
 | `CompanionManager+Permissions.swift` | ~115 | Permission checks, screen content request, permission polling. |
-| `CompanionManager+Onboarding.swift` | ~300 | Onboarding video, music, prompt stream, and the pointing demo. |
+| `CompanionManager+Onboarding.swift` | ~160 | Onboarding: welcome, the pointing demo, and the "press control + option" prompt (the original intro video and music were removed). |
 | `CompanionManager+PointTags.swift` | ~70 | `[POINT:...]` tag parsing. |
 | `MenuBarPanelManager.swift` | ~355 | NSStatusItem + adaptive NSPanel lifecycle, anchored quiet/conversation resizing, focus handoff for inline questions, passive reply presentation, and outside-click dismissal. |
 | `CompanionPanelView.swift` | ~500 | Adaptive SwiftUI quiet panel, expanded streaming reply with copy and inline follow-ups, setup permissions, header actions, and Library/Last reply/model footer. |

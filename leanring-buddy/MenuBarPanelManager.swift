@@ -272,7 +272,7 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func submitPanelQuestion(_ question: String) {
-        guard isCompanionReady, !companionManager.showOnboardingVideo,
+        guard isCompanionReady,
               !companionManager.buddyDictationManager.isDictationInProgress else { return }
         let frontmostApplication = NSWorkspace.shared.frontmostApplication
         if frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {

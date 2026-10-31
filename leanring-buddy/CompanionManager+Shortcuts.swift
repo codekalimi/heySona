@@ -43,7 +43,6 @@ extension CompanionManager {
             print("⚠️ Type to ask: finish setup in the menu bar panel first")
             return
         }
-        guard !showOnboardingVideo else { return }
 
         NotificationCenter.default.post(name: .heySonaDismissPanel, object: nil)
 
