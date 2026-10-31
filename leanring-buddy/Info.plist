@@ -14,6 +14,12 @@
 	<string>heySona uses your microphone so you can talk to it</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>heySona needs screen recording access to see your screen and help you.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>heySona adds reminders when you ask it to.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>heySona adds reminders when you ask it to.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>heySona adds calendar events when you ask it to.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>heySona uses speech recognition to transcribe your voice when you talk to it</string>
 </dict>

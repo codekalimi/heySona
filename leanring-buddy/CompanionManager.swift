@@ -153,6 +153,39 @@ final class CompanionManager: ObservableObject {
         try await elevenLabsTTSClient.speakText("Hey, I'm Sona. This is how I sound.")
     }
 
+    /// Runs the Mac actions (open apps, volume, reminders, ...) Claude calls.
+    private let macActionExecutor = MacActionExecutor()
+
+    /// When on, Claude can take actions on the Mac through tools. Persisted
+    /// to UserDefaults; defaults to on.
+    @Published private(set) var isMacActionsEnabled: Bool = UserDefaults.standard.object(forKey: "isMacActionsEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isMacActionsEnabled")
+
+    func setMacActionsEnabled(_ enabled: Bool) {
+        isMacActionsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isMacActionsEnabled")
+    }
+
+    /// Bridges Claude's tool calls to `MacActionExecutor`.
+    private func makeMacActionToolCallHandler() -> ClaudeToolCallHandler {
+        return { [weak self] toolName, toolInput in
+            guard let self else {
+                return (resultText: "heySona is shutting down.", isError: true)
+            }
+            let macActionResult = await self.macActionExecutor.execute(toolName: toolName, toolInput: toolInput)
+            return (resultText: macActionResult.resultText, isError: macActionResult.isError)
+        }
+    }
+
+    /// e.g. "Saturday, October 31, 2026 at 3:12 PM (America/Los_Angeles)"
+    private static func currentLocalTimeDescription() -> String {
+        let localTimeFormatter = DateFormatter()
+        localTimeFormatter.dateStyle = .full
+        localTimeFormatter.timeStyle = .short
+        return "\(localTimeFormatter.string(from: Date())) (\(TimeZone.current.identifier))"
+    }
+
     /// When off, replies are shown as a text bubble instead of spoken aloud.
     /// Persisted to UserDefaults; defaults to on.
     @Published private(set) var isSpokenReplyEnabled: Bool = UserDefaults.standard.object(forKey: "isSpokenReplyEnabled") == nil
@@ -779,11 +812,23 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // With Mac actions on, Claude gets the action tools, a system
+                // prompt section about them, and the local time so requests
+                // like "remind me tomorrow at 3" resolve to the right date.
+                let systemPromptForThisResponse = isMacActionsEnabled
+                    ? Self.companionVoiceResponseSystemPrompt + MacActionTools.systemPromptSection
+                    : Self.companionVoiceResponseSystemPrompt
+                let userPromptForThisResponse = isMacActionsEnabled
+                    ? transcript + "\n\n(current local time: \(Self.currentLocalTimeDescription()))"
+                    : transcript
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: systemPromptForThisResponse,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
+                    userPrompt: userPromptForThisResponse,
+                    tools: isMacActionsEnabled ? MacActionTools.toolDefinitionsForClaudeRequest : [],
+                    toolCallHandler: isMacActionsEnabled ? makeMacActionToolCallHandler() : nil,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }

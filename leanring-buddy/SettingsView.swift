@@ -16,6 +16,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 apiKeysSection
                 voiceSection
+                macActionsSection
                 modelSection
             }
             .padding(24)
@@ -72,6 +73,39 @@ struct SettingsView: View {
 
             ElevenLabsVoicePickerCard(companionManager: companionManager)
                 .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+        }
+    }
+
+    // MARK: - Mac Actions
+
+    private var macActionsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsSectionTitle("MAC ACTIONS")
+
+            settingsCard {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Let heySona do things on your Mac")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                        Text("Open apps, links, and files, find files, control media and volume, add reminders and calendar events, and run Shortcuts (you approve each Shortcut).")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    Toggle("", isOn: Binding(
+                        get: { companionManager.isMacActionsEnabled },
+                        set: { companionManager.setMacActionsEnabled($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .tint(DS.Colors.accent)
+                    .pointerCursor()
+                }
+            }
         }
     }
 

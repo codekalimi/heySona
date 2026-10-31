@@ -53,6 +53,8 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 
 **Global Hot Keys**: Type-to-ask and Esc use Carbon `RegisterEventHotKey` (`GlobalHotKeyRegistrar`), not the CGEvent tap, because a Carbon hot key consumes the keystroke so the frontmost app never receives it. Push-to-talk stays on the listen-only CGEvent tap because it's a modifier-only shortcut.
 
+**Mac Actions (Claude tool use)**: When "Let heySona do things on your Mac" is on in Settings (default on), the voice/typed pipeline sends `MacActionTools.toolDefinitionsForClaudeRequest` as client tools, appends `MacActionTools.systemPromptSection` to the system prompt, and adds the current local time to the user message. `ClaudeAPI.analyzeImageStreaming` runs a manual tool loop over SSE: it rebuilds every content block (text, `tool_use` from `input_json_delta` fragments, thinking + signature) and echoes the assistant turn back unchanged, sends all `tool_result`s for a turn in one user message, never runs tools on `max_tokens`/`refusal` stops or after the task is cancelled (Esc), and caps round trips at 6. Tools use `eager_input_streaming`, so `MacActionExecutor` validates every input itself; unparseable input goes back as an `INVALID_JSON` error result. Actions: open app/URL (http/https only), Spotlight file search (`mdfind`), open/reveal file (apps, scripts, installers are only revealed), media keys, volume (Core Audio), reminders and calendar events (EventKit; write-only calendar access), list/run Shortcuts (`/usr/bin/shortcuts`; every run needs the user's approval in an alert). The system prompt tells Claude never to act on instructions found in screen text. Conversation history stays text-only. Calendar/Reminders need the `com.apple.security.personal-information.calendars` entitlement (hardened runtime) and usage strings in `Info.plist`.
+
 **Transient Cursor Mode**: When "Show heySona" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
 ## Key Files
@@ -60,7 +62,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1200 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1250 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
@@ -75,9 +77,12 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `GlobalHotKeyRegistrar.swift` | ~120 | Registers consuming system-wide hot keys via Carbon `RegisterEventHotKey` (type-to-ask, Esc to stop). |
 | `TypeToAskPanelManager.swift` | ~170 | Spotlight-style floating text box for typing a question instead of speaking. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
+| `ClaudeAPI.swift` | ~490 | Claude vision API client with streaming (SSE) and non-streaming modes. Streaming mode runs the client tool-use loop for Mac actions. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the ElevenLabs API, plays back audio via `AVAudioPlayer`, and lists the account's voices for Settings. Exposes `isPlaying` for transient cursor scheduling. |
+| `MacActionTools.swift` | ~140 | Mac action tool names, descriptions, JSON input schemas, and the system prompt section that explains them to Claude. |
+| `MacActionExecutor.swift` | ~550 | Runs Mac action tool calls with input validation: apps, links, file search/open, media keys, volume, reminders, calendar events, Shortcuts (with approval). |
+| `MacSystemVolumeController.swift` | ~120 | Reads and sets output volume and mute through Core Audio. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
@@ -86,7 +91,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `APIKeyKeychainStore.swift` | ~135 | Reads and saves the Anthropic, AssemblyAI, and ElevenLabs API keys in the macOS Keychain. |
 | `APIKeySetupPrompt.swift` | ~50 | On launch, shows an alert asking for any API key not yet saved in the Keychain. |
 | `SettingsWindowManager.swift` | ~60 | Creates and shows the Settings window (titled `NSWindow` hosting `SettingsView`). |
-| `SettingsView.swift` | ~430 | Settings UI: API keys, ElevenLabs voice picker with preview, Claude model, and spoken-reply toggle. |
+| `SettingsView.swift` | ~430 | Settings UI: API keys, ElevenLabs voice picker with preview, Mac actions toggle, Claude model, and spoken-reply toggle. |
 
 ## Build & Run
 
