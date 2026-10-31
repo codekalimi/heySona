@@ -64,11 +64,16 @@ final class VisualExplanationSession {
 
     /// Called once the whole scene has arrived (setup, steps, quiz), with
     /// every line as played, so it can be saved and followed up on.
-    var onSceneCompleted: ((_ sceneLines: [String], _ sceneTitle: String) -> Void)?
+    var onSceneCompleted: ((_ sceneLines: [String], _ sceneTitle: String, _ concepts: ExplanationConcepts?) -> Void)?
 
     /// Every line of the scene so far, normalized: setup, steps, quiz.
     private var recordedSceneLines: [String] = []
     private var recordedQuizLine: String?
+    /// From the scene's {"concepts": {...}} line; kept out of the scene lines.
+    private var recordedConcepts: ExplanationConcepts?
+    /// Topics already explained (from the library), so this explanation can
+    /// link back to them. Nil when nothing is saved yet.
+    private let learnedTopicsDescription: String?
     private var sceneTitle = "Explanation"
 
     init(
@@ -78,8 +83,10 @@ final class VisualExplanationSession {
         claudeAPI: ClaudeAPI,
         elevenLabsTTSClient: ElevenLabsTTSClient,
         explainerPanelManager: VisualExplainerPanelManager,
-        isNarrationEnabled: Bool
+        isNarrationEnabled: Bool,
+        learnedTopicsDescription: String? = nil
     ) {
+        self.learnedTopicsDescription = learnedTopicsDescription
         self.source = source
         self.explanationBrief = explanationBrief
         self.userQuestion = userQuestion
@@ -157,7 +164,12 @@ final class VisualExplanationSession {
 
         let isFollowUp: Bool
         if case .followUp = source { isFollowUp = true } else { isFollowUp = false }
-        let sceneRequestUserPrompt = isFollowUp
+        // In the user prompt, not the system prompt, so the system prompt
+        // stays identical between requests and keeps its prompt cache.
+        let learnedTopicsSection = learnedTopicsDescription.map {
+            "\n\nTopics the user has already learned with heySona (connect to them where it truly helps, and name them exactly in the concepts line): \($0)"
+        } ?? ""
+        let sceneRequestUserPrompt = (isFollowUp
             ? """
             The scene currently open, as JSON Lines (setup line, then steps):
             \(recordedSceneLines.joined(separator: "\n"))
@@ -166,7 +178,7 @@ final class VisualExplanationSession {
 
             What to show next: \(explanationBrief)
 
-            Write only the new step lines now (and a new quiz line at the end if it fits).
+            Write only the new step lines now (and new quiz and concepts lines at the end if they fit).
             """
             : """
             The user asked: "\(userQuestion)"
@@ -174,7 +186,7 @@ final class VisualExplanationSession {
             What to explain: \(explanationBrief)
 
             Write the scene now, as JSON Lines.
-            """
+            """) + learnedTopicsSection
 
         do {
             _ = try await claudeAPI.analyzeImageStreaming(
@@ -209,7 +221,7 @@ final class VisualExplanationSession {
         }
         explainerPanelManager.finishSteps()
         print("🎬 Visual explanation: scene complete with \(stepNarrations.count) step(s)")
-        onSceneCompleted?(recordedSceneLines + [recordedQuizLine].compactMap { $0 }, sceneTitle)
+        onSceneCompleted?(recordedSceneLines + [recordedQuizLine].compactMap { $0 }, sceneTitle, recordedConcepts)
     }
 
     /// Routes one JSON line: the first scene object sets up the scene,
@@ -226,6 +238,13 @@ final class VisualExplanationSession {
             return
         }
 
+        // The concepts line ({"concepts": {...}}) links this explanation to
+        // others on the concept map. It isn't shown or replayed.
+        if let conceptsObject = lineObject["concepts"] as? [String: Any], lineObject["actions"] == nil {
+            handleConcepts(conceptsObject)
+            if hasShownSceneHeader || lineObject["objects"] == nil { return }
+        }
+
         // A quiz can come as its own line ({"quiz": [...]}) at the end.
         if hasShownSceneHeader, let quizQuestions = lineObject["quiz"] as? [Any] {
             handleQuiz(quizQuestions)
@@ -240,6 +259,7 @@ final class VisualExplanationSession {
             let quizInsideHeader = sceneHeader["quiz"] as? [Any]
             sceneHeader["steps"] = [Any]()
             sceneHeader["quiz"] = nil
+            sceneHeader["concepts"] = nil
             guard let headerJSON = Self.jsonText(sceneHeader) else { return }
 
             hasShownSceneHeader = true
@@ -277,6 +297,17 @@ final class VisualExplanationSession {
               let quizJSON = String(data: quizData, encoding: .utf8) else { return }
         recordedQuizLine = Self.jsonText(["quiz": quizQuestions])
         explainerPanelManager.setQuiz(quizJSON: quizJSON)
+    }
+
+    private func handleConcepts(_ conceptsObject: [String: Any]) {
+        guard let conceptsData = try? JSONSerialization.data(withJSONObject: conceptsObject),
+              let concepts = try? JSONDecoder().decode(ExplanationConcepts.self, from: conceptsData),
+              !concepts.mainConcept.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("⚠️ Visual explanation: skipped an unreadable concepts line")
+            return
+        }
+        recordedConcepts = concepts
+        print("🧠 Visual explanation: concepts \(concepts.mainConcept) → \(concepts.relatedConcepts + concepts.prerequisiteConcepts)")
     }
 
     private static func jsonObject(from jsonLine: String) -> [String: Any]? {
@@ -438,7 +469,8 @@ final class VisualExplanationSession {
     static let followUpAuthoringPromptSection = """
 
 
-    FOLLOW-UP MODE: the scene is already on screen and the user asked a follow-up. Do NOT write a setup line. Write only 2 to 4 new step lines that answer the follow-up, continuing from where the scene is: reuse the existing object ids (they're all still there, in the state the last step left them), move the camera to what the follow-up is about, add new objects with "add" if needed (with new unique ids), and tidy up earlier labels and effects that no longer apply. Optionally end with a new quiz line about the follow-up.
+    FOLLOW-UP MODE: the scene is already on screen and the user asked a follow-up. Do NOT write a setup line. Write only 2 to 4 new step lines that answer the follow-up, continuing from where the scene is: reuse the existing object ids (they're all still there, in the state the last step left them), move the camera to what the follow-up is about, add new objects with "add" if needed (with new unique ids), and tidy up earlier labels and effects that no longer apply. Optionally end with a new quiz line about the follow-up, and a concepts line listing any new related ideas.
+    If the user asked for it simpler (or said they didn't get it), re-explain the same idea from scratch in even plainer words, with a different, more everyday analogy and a smaller concrete example; don't just repeat the earlier steps.
     """
 
     // MARK: - Main Reply Tag
@@ -483,7 +515,7 @@ final class VisualExplanationSession {
     static func followUpMainReplySystemPromptSection(openSceneTitle: String) -> String {
         """
 
-        the visual explainer is open, showing "\(openSceneTitle)". if the user's question is a follow-up about it (zoom in, show a part, go deeper, why or how something in it works, compare a part), reply with a short one-sentence lead-in and add [VISUAL_FOLLOWUP:a brief of what to show and explain next] at the very end, before [POINT:none]; the explainer will add new steps to the same scene. if they ask about something different that deserves its own visual, use [VISUAL:...] instead. otherwise answer normally.
+        the visual explainer is open, showing "\(openSceneTitle)". if the user's question is a follow-up about it (zoom in, show a part, go deeper, why or how something in it works, compare a part, explain it simpler or with a different analogy, how it relates to another idea), reply with a short one-sentence lead-in and add [VISUAL_FOLLOWUP:a brief of what to show and explain next] at the very end, before [POINT:none]; the explainer will add new steps to the same scene. if they ask about something different that deserves its own visual, use [VISUAL:...] instead. otherwise answer normally.
         """
     }
 
@@ -491,8 +523,8 @@ final class VisualExplanationSession {
     static let mainReplySystemPromptSection = """
 
     visual explanations:
-    you can open heySona's visual explainer: a window where an animated 3d model or 2d diagram is built and narrated step by step. use it when the user asks you to explain, show, teach, or visualize how something works, what's inside something, how a process unfolds, or how ideas connect, whenever seeing it would genuinely help (machines, science, the body, space, math ideas, algorithms, history, economics). don't use it for quick facts, yes or no questions, or things on their screen you can simply point at.
-    when you use it, your spoken reply is only a short, natural one-sentence lead-in like "sure, let me show you how a rocket engine works." the explainer gives the full explanation, so don't explain it yourself. then add this tag at the very end, before [POINT:none]: [VISUAL:a detailed brief for the explainer: what to explain, the level (a curious beginner unless they say otherwise), the parts or stages to cover in order, and anything relevant from their screen or this conversation]. the brief must not contain square brackets.
+    you can open heySona's visual explainer: a window where an animated 3d model or 2d diagram is built and narrated step by step. use it when the user asks you to explain, show, teach, or visualize how something works, what's inside something, how a process unfolds, or how ideas connect, whenever seeing it would genuinely help (data structures, algorithms, math ideas, machine learning, neural networks, ai agents, how computers work, machines, science, history). the user is learning computer science, math, data structures and algorithms, machine learning, deep learning, and ai agents, so lean toward a visual for "how does it work" and "what is" questions about these. don't use it for quick facts, yes or no questions, or things on their screen you can simply point at.
+    when you use it, your spoken reply is only a short, natural one-sentence lead-in like "sure, let me show you how a rocket engine works." the explainer gives the full explanation, so don't explain it yourself. then add this tag at the very end, before [POINT:none]: [VISUAL:a detailed brief for the explainer: what to explain, the level (a curious beginner, in simple english, unless they say otherwise), the parts or stages to cover in order, a real-world analogy that fits, a tiny concrete example to walk through (for example, five numbers to sort or a three-node network), and anything relevant from their screen or this conversation]. the brief must not contain square brackets.
     """
 
     // MARK: - Scene Authoring Prompt
@@ -549,15 +581,46 @@ final class VisualExplanationSession {
     Actions from earlier steps stay in effect (labels, flows, highlights) until you undo them, so tidy up: unlabel old labels and clearEffects when the focus moves on.
 
     MAKING IT GOOD
-    - 5 to 8 steps. Build understanding in order: what it is, its parts, how they work together, the key insight, a closing summary.
-    - Each step has one clear visual change and 1 to 3 short spoken sentences of narration: warm, plain language, no symbols or abbreviations that sound odd aloud, no markdown. The narration must describe exactly what that step shows.
+    - 5 to 9 steps. Build understanding in this order: the problem it solves (why it exists), a real-world analogy, what it is and its parts, how it works on a tiny concrete example, the key insight, how it connects to other ideas, a one-sentence summary.
+    - Each step has one clear visual change and 1 to 3 short spoken sentences of narration, warm and spoken, no markdown. The narration must describe exactly what that step shows.
     - Every step should move the camera or the focus to what it's about (camera fit on the parts being explained).
     - Make models recognizable: compose them from several shapes with sensible proportions and distinct colors per part. Stylized and clear beats detailed and cluttered. Use at most 40 objects in total.
     - Every id used in an action must exist (in setup or added in an earlier or the same step).
     - Don't attach things to objects that are moving (revolving or moving): if you need a label or line on a moving object, stop it first.
     - Be accurate. If the topic is abstract (ideas, history, economics), use a 2d diagram: cards, connecting arrows or lines, a timeline line with circle markers and cards, or a simple chart built from rects.
 
-    QUIZ: after the last step, add one more line: {"quiz":[{"question":"...","choices":["...","...","...","..."],"answerIndex":2,"explanation":"one short sentence"}]} with 2 or 3 questions that check the key ideas (not trivia), 3 or 4 short choices each, one clearly correct.
+    SIMPLE ENGLISH (the user wants to understand deeply, not be impressed):
+    - Short sentences and everyday words, as if explaining to a smart friend who is new to the topic. One idea per sentence.
+    - Use a technical word only when it matters, and say what it means the first time, in plain words ("a pointer, which is the address of where something lives in memory").
+    - Intuition first, then the precise idea. Show a formula only after its meaning is clear, as a card, and say aloud what it means in words ("the new weight is the old weight minus a small step downhill"), never by reading symbols.
+    - Use small, concrete numbers in examples (five items, not n; a learning rate of 0.1, not alpha).
+    - Never say "simply", "just", "obviously", or "trivially".
+
+    REAL-WORLD ANALOGY (always include one):
+    - Give one step to an everyday analogy that matches how the idea really works, shown visually in a corner (cards, simple shapes) next to the real thing. For example: a hash map is a coat check, where your ticket number tells the attendant exactly which hook to go to; a stack is a pile of plates; a queue is a line at a coffee shop; recursion is a set of nesting dolls; gradient descent is walking downhill in fog by feeling the slope under your feet; attention is a student highlighting the words in a sentence that matter for the question; an ai agent is an intern who reads the task, uses tools, checks the result, and tries again.
+    - Say where the analogy breaks down when that matters, in one short sentence.
+
+    CONNECTING IDEAS:
+    - Show where the idea fits: what it builds on and what builds on it. When the user prompt lists topics the user has already learned, link to one or two of them where it truly helps ("remember arrays? a hash map is an array plus a clever way to pick the slot"), shown as a card or a line to a small labeled circle.
+    - Point out the one key insight that makes the idea click, and compare it with a close neighbor when that clears up confusion (array versus linked list, stack versus queue, supervised versus unsupervised learning).
+
+    PLAYBOOK FOR COMPUTER SCIENCE, MATH, AND MACHINE LEARNING (use 2d unless the idea is physical):
+    - Arrays and strings: a row of rects with the index labeled under each and the value inside (a label at each rect's position). Pointers and indexes: small arrows or colored circles that "move" along the row.
+    - Linked lists, trees, graphs, tries, heaps: circles for nodes and lines for edges, laid out top to bottom for trees. Show a traversal or search by highlighting nodes in order, and a "flow" along the edges for the path taken.
+    - Algorithms (sorting, searching, two pointers, sliding window, dynamic programming): walk through a tiny input step by step; use "move" to swap or shift items and "highlight" for what is being compared. For dynamic programming, fill a small grid of rects one cell at a time.
+    - Stacks and queues: rects stacked or in a row; push and pop with "add", "move", and "hide".
+    - Big O and complexity: a graph with labeled axes (input size, steps) and drawn curves for 1, log n, n, n log n, and n squared, compared with a concrete count ("for a thousand items, that's about ten steps versus a million").
+    - Recursion: nested rects or a call tree that grows downward, then collapses as answers return.
+    - Math (functions, derivatives, probability, linear algebra): a graph with axes; draw curves, show a tangent line for a derivative, arrows for vectors, a grid that stretches for a matrix, bars for a distribution.
+    - Neural networks: columns of circles (input, hidden, output layers) joined by lines; a "flow" left to right for the forward pass and right to left for backpropagation; thicker or brighter lines for bigger weights.
+    - Training and gradient descent: a loss curve (a bowl-shaped line) with a sphere that moves down it in smaller and smaller steps; a loss-over-time line that falls.
+    - Transformers and attention: words as cards in a row, with lines between them whose brightness shows how much each word attends to the others.
+    - AI agents: a loop diagram of cards (goal, think, pick a tool, act, observe the result, repeat or answer) with a "flow" going around it, and tool cards off to the side.
+    - Code: a card with "code": true holds a few lines of real code (under 8 short lines, with real line breaks written as \\n); narrate what it does in words, never read it out symbol by symbol.
+
+    CONCEPTS: after the quiz, add one last line: {"concepts":{"main":"Hash map","related":["Array","Hash function","Set"],"prerequisites":["Array"]}} where main is the topic's short common name (2 to 4 words, title case), related lists 2 to 5 closely connected ideas, and prerequisites lists the ideas worth knowing first. Use the exact names of already-learned topics when they fit, so the user's concept map links them.
+
+    QUIZ: after the last step, add a line: {"quiz":[{"question":"...","choices":["...","...","...","..."],"answerIndex":2,"explanation":"one short sentence"}]} with 2 or 3 questions that check the key ideas (not trivia), 3 or 4 short choices each, one clearly correct.
 
     PRE-BUILT PARTS (use them where they fit; they look much better than stacking boxes):
     - gear: "radius", "teeth" (6-60), "thickness", optional "innerRadius", "holeRadius". A flat toothed gear facing +z (rotate [90,0,0] to lay it flat). Meshing gears: place centers about radiusA + radiusB × 0.9 apart, and spin them in opposite directions with speeds in the inverse ratio of their teeth.
