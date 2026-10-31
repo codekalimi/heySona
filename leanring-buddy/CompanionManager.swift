@@ -196,6 +196,10 @@ final class CompanionManager: ObservableObject {
             systemPrompt += StepGuidanceParser.systemPromptSection
         }
 
+        if isVisualExplanationEnabled {
+            systemPrompt += VisualExplanationSession.mainReplySystemPromptSection
+        }
+
         if isMacActionsEnabled {
             systemPrompt += MacActionTools.systemPromptSection
             toolDefinitions += MacActionTools.toolDefinitionsForClaudeRequest
@@ -352,7 +356,57 @@ final class CompanionManager: ObservableObject {
 
     /// Opens the built-in rocket engine demo (Settings > Visuals).
     func showVisualExplainerDemo() {
+        stopVisualExplanation()
         visualExplainerPanelManager.showDemoRocketExplanation()
+    }
+
+    /// When on, "explain how X works" questions open an animated, narrated
+    /// explanation in the explainer window.
+    @Published private(set) var isVisualExplanationEnabled: Bool = UserDefaults.standard.object(forKey: "isVisualExplanationEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isVisualExplanationEnabled")
+
+    func setVisualExplanationEnabled(_ enabled: Bool) {
+        isVisualExplanationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isVisualExplanationEnabled")
+    }
+
+    private var currentVisualExplanationSession: VisualExplanationSession?
+
+    private func startVisualExplanation(brief: String, userQuestion: String) {
+        stopVisualExplanation()
+        print("🎬 Visual explanation requested: \(brief)")
+
+        let visualExplanationSession = VisualExplanationSession(
+            explanationBrief: brief,
+            userQuestion: userQuestion,
+            claudeAPI: claudeAPI,
+            elevenLabsTTSClient: elevenLabsTTSClient,
+            explainerPanelManager: visualExplainerPanelManager,
+            isNarrationEnabled: isSpokenReplyEnabled
+        )
+        visualExplanationSession.onSceneFailed = { [weak self] spokenFailureMessage in
+            guard let self else { return }
+            if self.isSpokenReplyEnabled {
+                Task { try? await self.elevenLabsTTSClient.speakText(spokenFailureMessage) }
+            } else {
+                self.responseOverlayManager.showOverlayAndBeginStreaming()
+                self.responseOverlayManager.updateStreamingText(spokenFailureMessage)
+                self.responseOverlayManager.finishStreaming()
+            }
+        }
+        // Closing the window stops generation and narration.
+        visualExplainerPanelManager.onExplainerClosed = { [weak self] in
+            self?.stopVisualExplanation()
+        }
+
+        currentVisualExplanationSession = visualExplanationSession
+        visualExplanationSession.start()
+    }
+
+    private func stopVisualExplanation() {
+        currentVisualExplanationSession?.stop()
+        currentVisualExplanationSession = nil
     }
 
     // MARK: - Step-By-Step Guidance
@@ -928,6 +982,7 @@ final class CompanionManager: ObservableObject {
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
         stopStepGuidance()
+        stopVisualExplanation()
         clearScreenDrawings()
         clearDetectedElementLocation()
 
@@ -1003,6 +1058,7 @@ final class CompanionManager: ObservableObject {
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
         stopStepGuidance()
+        stopVisualExplanation()
         clearScreenDrawings()
         clearDetectedElementLocation()
 
@@ -1157,8 +1213,13 @@ final class CompanionManager: ObservableObject {
                 // Drawing tags come before the [POINT:...] tag, which must be
                 // last for its parser, so pull them out first. They're always
                 // removed from the text so they're never spoken.
+                // A [VISUAL:...] brief means Claude wants to explain this in the
+                // visual explainer; the spoken reply is just a short lead-in.
+                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: fullResponseText)
+                let visualExplanationBrief = isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil
+
                 let drawingExtraction = ScreenDrawingTagParser.extractDrawings(
-                    from: fullResponseText,
+                    from: visualExplanationExtraction.textWithoutTag,
                     screenCaptures: screenCaptures
                 )
                 if isScreenDrawingEnabled && !drawingExtraction.drawings.isEmpty {
@@ -1234,9 +1295,14 @@ final class CompanionManager: ObservableObject {
 
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)
+                // Note the visual explanation in history so follow-up
+                // questions ("why is the nozzle that shape?") have context.
+                let assistantResponseForHistory = visualExplanationBrief.map { brief in
+                    spokenText + " (then showed a visual explanation: \(brief))"
+                } ?? spokenText
                 conversationHistory.append((
                     userTranscript: transcript,
-                    assistantResponse: spokenText
+                    assistantResponse: assistantResponseForHistory
                 ))
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
@@ -1270,6 +1336,12 @@ final class CompanionManager: ObservableObject {
                         speakCreditsErrorFallback()
                     }
                 }
+                // Started after the lead-in begins playing, so the explainer's
+                // narration waits for it instead of talking over it.
+                if let visualExplanationBrief, !Task.isCancelled {
+                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript)
+                }
+
                 scheduleScreenDrawingsFadeOut()
             } catch is CancellationError {
                 // User spoke again — response was interrupted

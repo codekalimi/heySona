@@ -20,10 +20,10 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     private var explainerPanel: NSPanel?
     private var explainerWebView: WKWebView?
 
-    /// The page posts "ready" once its renderer is set up; scenes sent
-    /// before then wait here.
+    /// The page posts "ready" once its renderer is set up; commands sent
+    /// before then wait here and run in order.
     private var isRendererReady = false
-    private var sceneWaitingForRenderer: (sceneJSON: String, autoAdvance: Bool)?
+    private var scriptsWaitingForRenderer: [String] = []
 
     /// Name the page uses for `window.webkit.messageHandlers.<name>`.
     private static let messageHandlerName = "heySona"
@@ -35,6 +35,8 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     /// Called when a step starts, with its index and narration (used to
     /// sync the voice in phase 2).
     var onStepStarted: ((_ stepIndex: Int, _ narration: String) -> Void)?
+    /// The user pressed play/pause in the window.
+    var onPlayPauseRequested: ((_ isPlaying: Bool) -> Void)?
     var onExplainerClosed: (() -> Void)?
 
     var isExplainerVisible: Bool {
@@ -53,31 +55,51 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
         showScene(sceneJSON: demoSceneJSON, autoAdvance: true)
     }
 
-    /// Shows a scene. With `autoAdvance` the page moves through steps on
-    /// its own timing; otherwise the caller drives steps with `goToStep`.
-    func showScene(sceneJSON: String, autoAdvance: Bool) {
+    /// Opens the window with a status message while a scene is prepared.
+    func showPreparingStatus(_ statusText: String) {
+        bringPanelToFront()
+        evaluateRendererScript("heySonaExplainer.showStatus(\(Self.javaScriptStringLiteral(statusText)))")
+    }
+
+    /// Shows a scene. With `autoAdvance` the page moves through steps on its
+    /// own timing; otherwise the caller drives steps with `goToStep`. With
+    /// `stepsStillStreaming`, more steps arrive later through `appendStep`.
+    func showScene(sceneJSON: String, autoAdvance: Bool, stepsStillStreaming: Bool = false) {
         // Only well-formed JSON objects are ever passed to the page.
-        guard let sceneData = sceneJSON.data(using: .utf8),
-              (try? JSONSerialization.jsonObject(with: sceneData)) is [String: Any] else {
+        guard Self.isJSONObject(sceneJSON) else {
             print("⚠️ Visual explainer: scene is not a valid JSON object")
             return
         }
+        bringPanelToFront()
+        // A JSON object is also a valid JavaScript object literal.
+        evaluateRendererScript("heySonaExplainer.loadScene(\(sceneJSON), { autoAdvance: \(autoAdvance), stepsStillStreaming: \(stepsStillStreaming) })")
+    }
 
+    func appendStep(stepJSON: String) {
+        guard Self.isJSONObject(stepJSON) else { return }
+        evaluateRendererScript("heySonaExplainer.appendSteps([\(stepJSON)])")
+    }
+
+    /// No more steps will be appended.
+    func finishSteps() {
+        evaluateRendererScript("heySonaExplainer.finishSteps()")
+    }
+
+    /// Narration finished the last step; the play button becomes "replay".
+    func markFinished() {
+        evaluateRendererScript("heySonaExplainer.markFinished()")
+    }
+
+    func goToStep(_ stepIndex: Int) {
+        evaluateRendererScript("heySonaExplainer.goToStep(\(stepIndex))")
+    }
+
+    private func bringPanelToFront() {
         createPanelIfNeeded()
         // The app has no Dock icon; activate so the panel comes to the front
         // and receives keys (Esc, space, arrows).
         NSApp.activate(ignoringOtherApps: true)
         explainerPanel?.makeKeyAndOrderFront(nil)
-
-        if isRendererReady {
-            sendSceneToRenderer(sceneJSON: sceneJSON, autoAdvance: autoAdvance)
-        } else {
-            sceneWaitingForRenderer = (sceneJSON, autoAdvance)
-        }
-    }
-
-    func goToStep(_ stepIndex: Int) {
-        evaluateRendererScript("heySonaExplainer.goToStep(\(stepIndex))")
     }
 
     func closeExplainer() {
@@ -147,18 +169,17 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
         explainerPanel?.delegate = nil
         explainerPanel = nil
         isRendererReady = false
-        sceneWaitingForRenderer = nil
+        scriptsWaitingForRenderer = []
         onExplainerClosed?()
     }
 
     // MARK: - Talking To The Page
 
-    private func sendSceneToRenderer(sceneJSON: String, autoAdvance: Bool) {
-        // A JSON object is also a valid JavaScript object literal.
-        evaluateRendererScript("heySonaExplainer.loadScene(\(sceneJSON), { autoAdvance: \(autoAdvance) })")
-    }
-
     private func evaluateRendererScript(_ script: String) {
+        guard isRendererReady else {
+            scriptsWaitingForRenderer.append(script)
+            return
+        }
         explainerWebView?.evaluateJavaScript(script + "; undefined") { _, error in
             if let error {
                 print("⚠️ Visual explainer script error: \(error.localizedDescription)")
@@ -177,10 +198,11 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
         switch messageType {
         case "ready":
             isRendererReady = true
-            if let sceneWaitingForRenderer {
-                sendSceneToRenderer(sceneJSON: sceneWaitingForRenderer.sceneJSON, autoAdvance: sceneWaitingForRenderer.autoAdvance)
-                self.sceneWaitingForRenderer = nil
-            }
+            let scriptsToRun = scriptsWaitingForRenderer
+            scriptsWaitingForRenderer = []
+            scriptsToRun.forEach(evaluateRendererScript)
+        case "playPauseRequested":
+            onPlayPauseRequested?(messageBody["isPlaying"] as? Bool ?? true)
         case "stepStarted":
             if let stepIndex = messageBody["index"] as? Int {
                 onStepStarted?(stepIndex, messageBody["narration"] as? String ?? "")
@@ -192,6 +214,20 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
         default:
             break
         }
+    }
+
+    private static func isJSONObject(_ jsonText: String) -> Bool {
+        guard let jsonData = jsonText.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: jsonData)) is [String: Any]
+    }
+
+    /// Encodes text as a quoted, escaped JavaScript string.
+    private static func javaScriptStringLiteral(_ text: String) -> String {
+        guard let encodedData = try? JSONSerialization.data(withJSONObject: [text]),
+              let encodedArray = String(data: encodedData, encoding: .utf8) else {
+            return "\"\""
+        }
+        return String(encodedArray.dropFirst().dropLast())
     }
 
     // MARK: - Bundle Resources

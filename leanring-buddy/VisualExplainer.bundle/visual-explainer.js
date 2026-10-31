@@ -23,7 +23,10 @@
     radiusTop/radiusBottom, height), cone (radius, height), torus (radius,
     tube), lathe (profile [[radius, y], ...], a shape spun around the y axis,
     good for nozzles and bottles), tube (points [[x,y,z], ...], radius, for
-    pipes), rect (size [w,h]), circle (radius), ring (innerRadius, outerRadius).
+    pipes), rect (size [w,h]), circle (radius), ring (innerRadius, outerRadius),
+    line (points [[x,y,z], ...], width; straight segments, for graphs, axes,
+    timelines; "drawn": false starts it invisible so "draw" can trace it),
+    card (title, text, width in pixels; an HTML text box anchored at position).
 
   Actions (a "targets" field takes one id or a list of ids):
     show / hide          { "do": "show", "targets": ["tank"] }
@@ -46,6 +49,11 @@
                          [degrees around, degrees above the horizon] and is optional)
     orbit                { "do": "orbit", "enabled": false }
     clearEffects         removes arrows, flows, and plumes added by earlier steps
+    draw                 { "do": "draw", "targets": "curve", "seconds": 2 }   trace a line (or tube) on screen
+    move                 { "do": "move", "targets": "item3", "to": [x,y,z] | "by": [dx,dy,dz], "seconds": 1.2 }
+    revolve / stopRevolve { "do": "revolve", "targets": "earth", "center": [0,0,0], "speed": 0.2, "axis": "y" }
+                         orbit around a point (turns per second; axis defaults to z in 2d)
+    add                  { "do": "add", "objects": [<object>, ...] }   bring in new objects during a step
 
   ─── JavaScript API (called from Swift) ──────────────────────────────────
     heySonaExplainer.loadScene(scene, { autoAdvance: true, stepsStillStreaming: false })
@@ -191,6 +199,7 @@
     const objectRecord = explainerState.objectRecordsById.get(pointOrObjectId);
     if (!objectRecord) return null;
     const boundingBox = new THREE.Box3().setFromObject(objectRecord.mesh);
+    if (boundingBox.isEmpty()) return objectRecord.mesh.getWorldPosition(new THREE.Vector3());
     return boundingBox.getCenter(new THREE.Vector3());
   }
 
@@ -229,6 +238,17 @@
           : new THREE.CatmullRomCurve3(tubePoints, false, 'catmullrom', 0.2);
         return new THREE.TubeGeometry(tubeCurve, 96, Number(objectDescription.radius) || 0.08, 14, false);
       }
+      case 'line': {
+        // Straight segments (no smoothing), so graph data and axes stay exact.
+        const linePoints = asArray(objectDescription.points).map((point) => vectorFrom(point, new THREE.Vector3()));
+        if (linePoints.length < 2) return new THREE.CylinderGeometry(0.02, 0.02, 0.01, 6);
+        const linePath = new THREE.CurvePath();
+        for (let pointIndex = 1; pointIndex < linePoints.length; pointIndex++) {
+          linePath.add(new THREE.LineCurve3(linePoints[pointIndex - 1], linePoints[pointIndex]));
+        }
+        const lineWidth = Number(objectDescription.width) || 0.06;
+        return new THREE.TubeGeometry(linePath, Math.max(32, linePoints.length * 6), lineWidth / 2, 8, false);
+      }
       case 'rect': {
         const rectSize = asArray(objectDescription.size);
         return new THREE.PlaneGeometry(Number(rectSize[0]) || 1, Number(rectSize[1]) || 1);
@@ -248,8 +268,33 @@
     }
   }
 
-  function buildSceneObject(objectDescription) {
+  /** A text card: an HTML box anchored to a point in the scene. */
+  function makeCardElement(objectDescription) {
+    const cardElement = document.createElement('div');
+    cardElement.className = 'scene-card';
+    cardElement.style.width = (Number(objectDescription.width) || 220) + 'px';
+    if (objectDescription.color) cardElement.style.setProperty('--card-accent', objectDescription.color);
+    if (objectDescription.title) {
+      const cardTitleElement = document.createElement('div');
+      cardTitleElement.className = 'scene-card-title';
+      cardTitleElement.textContent = String(objectDescription.title);
+      cardElement.appendChild(cardTitleElement);
+    }
+    if (objectDescription.text) {
+      const cardBodyElement = document.createElement('div');
+      cardBodyElement.className = 'scene-card-body';
+      cardBodyElement.textContent = String(objectDescription.text);
+      cardElement.appendChild(cardBodyElement);
+    }
+    labelLayerElement.appendChild(cardElement);
+    return cardElement;
+  }
+
+  function buildSceneObject(objectDescription, isAddedByStep) {
     const shape = String(objectDescription.shape || 'box').toLowerCase();
+    const objectId = String(objectDescription.id || ('object-' + explainerState.objectRecordsById.size));
+    // Adding the same id twice (e.g. replaying a step) keeps the first one.
+    if (explainerState.objectRecordsById.has(objectId)) return;
     const isFlatOrOpenShape = ['lathe', 'rect', 'circle', 'ring'].includes(shape) || objectDescription.openEnded;
     const baseOpacity = objectDescription.opacity === undefined ? 1 : Math.max(0, Math.min(1, Number(objectDescription.opacity)));
 
@@ -264,7 +309,9 @@
           emissive: new THREE.Color(0x000000),
         });
 
-    const mesh = new THREE.Mesh(makeGeometry(objectDescription), material);
+    const isCard = shape === 'card';
+    // Cards are HTML, so their "mesh" is just an empty anchor point.
+    const mesh = isCard ? new THREE.Object3D() : new THREE.Mesh(makeGeometry(objectDescription), material);
     mesh.position.copy(vectorFrom(objectDescription.position, new THREE.Vector3()));
     const rotationInDegrees = asArray(objectDescription.rotation);
     mesh.rotation.set(
@@ -278,27 +325,56 @@
     }
 
     const isInitiallyShown = !objectDescription.hidden;
+    // Lines with "drawn": false start invisible and are traced by "draw".
+    const initialDrawProgress = objectDescription.drawn === false ? 0 : 1;
     const objectRecord = {
-      id: String(objectDescription.id || ('object-' + explainerState.objectRecordsById.size)),
+      id: objectId,
       description: objectDescription,
       mesh,
-      material,
+      material: isCard ? null : material,
+      cardElement: isCard ? makeCardElement(objectDescription) : null,
+      isAddedByStep: Boolean(isAddedByStep),
       initialColor: new THREE.Color(objectDescription.color || '#8fa3c7'),
+      currentBaseColor: new THREE.Color(objectDescription.color || '#8fa3c7'),
+      initialPosition: mesh.position.clone(),
       initialRotation: mesh.rotation.clone(),
+      initialDrawProgress,
+      drawProgress: initialDrawProgress,
+      drawTargetProgress: initialDrawProgress,
+      drawSecondsTotal: 1.5,
+      moveTween: null,
+      revolveCenter: null,
+      revolveAxis: 'y',
+      revolveTurnsPerSecond: 0,
       initialBaseOpacity: baseOpacity,
       baseOpacity,
       isShown: isInitiallyShown,
-      currentOpacity: isInitiallyShown ? baseOpacity : 0,
+      // Objects added during a step fade in rather than popping into view.
+      currentOpacity: isInitiallyShown && !isAddedByStep ? baseOpacity : 0,
       targetOpacity: isInitiallyShown ? baseOpacity : 0,
       highlightColor: null,
       highlightLight: null,
       spinAxis: null,
       spinTurnsPerSecond: 0,
     };
-    material.opacity = objectRecord.currentOpacity;
+    if (!isCard) {
+      material.opacity = objectRecord.currentOpacity;
+      if (initialDrawProgress < 1) mesh.geometry.setDrawRange(0, 0);
+    } else {
+      material.dispose();
+    }
     mesh.visible = objectRecord.currentOpacity > 0.01;
     explainerState.sceneObjectsGroup.add(mesh);
     explainerState.objectRecordsById.set(objectRecord.id, objectRecord);
+  }
+
+  function disposeSceneObject(objectRecord) {
+    clearHighlight(objectRecord);
+    explainerState.sceneObjectsGroup.remove(objectRecord.mesh);
+    if (objectRecord.mesh.geometry) objectRecord.mesh.geometry.dispose();
+    if (objectRecord.material) objectRecord.material.dispose();
+    if (objectRecord.cardElement) objectRecord.cardElement.remove();
+    explainerState.objectRecordsById.delete(objectRecord.id);
   }
 
   /** Recomputes every object's target opacity from shown/focus/cutaway state. */
@@ -369,8 +445,14 @@
       projectedLabelPosition.copy(anchorPoint).project(activeCamera);
       const isBehindCamera = projectedLabelPosition.z > 1;
       labelRecord.element.style.display = isBehindCamera ? 'none' : 'flex';
-      labelRecord.element.style.left = ((projectedLabelPosition.x + 1) / 2 * stageWidth) + 'px';
-      labelRecord.element.style.top = ((1 - projectedLabelPosition.y) / 2 * stageHeight) + 'px';
+      // Keep the whole label inside the stage, even for anchors near an edge.
+      // The label sits above its anchor, so the top needs room for its height.
+      const labelHalfWidth = labelRecord.element.offsetWidth / 2 || 40;
+      const labelHeight = labelRecord.element.offsetHeight || 50;
+      const labelLeft = (projectedLabelPosition.x + 1) / 2 * stageWidth;
+      const labelTop = (1 - projectedLabelPosition.y) / 2 * stageHeight;
+      labelRecord.element.style.left = Math.max(labelHalfWidth + 6, Math.min(stageWidth - labelHalfWidth - 6, labelLeft)) + 'px';
+      labelRecord.element.style.top = Math.max(labelHeight + 4, Math.min(stageHeight - 4, labelTop)) + 'px';
     }
   }
 
@@ -470,6 +552,10 @@
 
     const { particlePoints, particleGeometry, particleMaterial, baseColor } =
       makeParticlePoints(particleCount, flowColor, explainerState.isTwoDimensional ? 9 : 0.22);
+    // Flows usually run inside pipes and vessels; drawing them on top makes
+    // them glow through the walls instead of being hidden.
+    particleMaterial.depthTest = false;
+    particlePoints.renderOrder = 10;
 
     // A faint guide line shows the route even between particles.
     const guideMaterial = new THREE.LineBasicMaterial({ color: flowColor, transparent: true, opacity: 0.22 });
@@ -822,7 +908,8 @@
         break;
       case 'color':
         targetRecords.forEach((objectRecord) => {
-          if (action.color) objectRecord.material.color.set(action.color);
+          if (action.color) objectRecord.currentBaseColor.set(action.color);
+          if (action.color && objectRecord.material) objectRecord.material.color.set(action.color);
         });
         break;
       case 'label':
@@ -855,6 +942,43 @@
       case 'stopspin':
         targetRecords.forEach((objectRecord) => { objectRecord.spinTurnsPerSecond = 0; });
         break;
+      case 'draw':
+        targetRecords.forEach((objectRecord) => {
+          objectRecord.isShown = true;
+          objectRecord.drawTargetProgress = 1;
+          objectRecord.drawSecondsTotal = Number(action.seconds) || 1.5;
+          if (isInstant) objectRecord.drawProgress = 1;
+        });
+        break;
+      case 'move':
+        targetRecords.forEach((objectRecord) => {
+          const startPosition = objectRecord.mesh.position.clone();
+          const endPosition = action.to
+            ? vectorFrom(action.to, startPosition)
+            : startPosition.clone().add(vectorFrom(action.by, new THREE.Vector3()));
+          if (isInstant) {
+            objectRecord.mesh.position.copy(endPosition);
+            objectRecord.moveTween = null;
+          } else {
+            objectRecord.moveTween = { startPosition, endPosition, elapsedSeconds: 0, durationSeconds: Number(action.seconds) || 1.2 };
+          }
+        });
+        break;
+      case 'revolve':
+        targetRecords.forEach((objectRecord) => {
+          objectRecord.revolveCenter = vectorFrom(action.center, new THREE.Vector3());
+          objectRecord.revolveAxis = String(action.axis || (explainerState.isTwoDimensional ? 'z' : 'y')).toLowerCase();
+          objectRecord.revolveTurnsPerSecond = Number(action.speed) || 0.25;
+        });
+        break;
+      case 'stoprevolve':
+        targetRecords.forEach((objectRecord) => { objectRecord.revolveTurnsPerSecond = 0; });
+        break;
+      case 'add':
+        asArray(action.objects ?? action.object).forEach((objectDescription) => {
+          if (objectDescription && typeof objectDescription === 'object') buildSceneObject(objectDescription, true);
+        });
+        break;
       case 'camera':
         moveCamera(action, isInstant);
         break;
@@ -885,13 +1009,23 @@
     removeAllEffects();
     removeAllLabels();
     explainerState.focusedObjectIds = null;
-    for (const objectRecord of explainerState.objectRecordsById.values()) {
+    for (const objectRecord of [...explainerState.objectRecordsById.values()]) {
+      if (objectRecord.isAddedByStep) {
+        disposeSceneObject(objectRecord);
+        continue;
+      }
       clearHighlight(objectRecord);
       objectRecord.isShown = !objectRecord.description.hidden;
       objectRecord.baseOpacity = objectRecord.initialBaseOpacity;
-      objectRecord.material.color.copy(objectRecord.initialColor);
+      objectRecord.currentBaseColor.copy(objectRecord.initialColor);
+      if (objectRecord.material) objectRecord.material.color.copy(objectRecord.initialColor);
+      objectRecord.mesh.position.copy(objectRecord.initialPosition);
       objectRecord.mesh.rotation.copy(objectRecord.initialRotation);
       objectRecord.spinTurnsPerSecond = 0;
+      objectRecord.revolveTurnsPerSecond = 0;
+      objectRecord.moveTween = null;
+      objectRecord.drawProgress = objectRecord.initialDrawProgress;
+      objectRecord.drawTargetProgress = objectRecord.initialDrawProgress;
     }
     refreshObjectTargetOpacities();
     for (const objectRecord of explainerState.objectRecordsById.values()) {
@@ -1039,6 +1173,40 @@
 
   // ─── Render loop ────────────────────────────────────────────────────────
 
+  /** Slides (move) and orbits (revolve) objects each frame. */
+  function updateObjectMotion(objectRecord, deltaSeconds) {
+    const moveTween = objectRecord.moveTween;
+    if (moveTween) {
+      moveTween.elapsedSeconds += deltaSeconds;
+      const easedProgress = easeInOutCubic(Math.min(1, moveTween.elapsedSeconds / moveTween.durationSeconds));
+      objectRecord.mesh.position.lerpVectors(moveTween.startPosition, moveTween.endPosition, easedProgress);
+      if (easedProgress >= 1) objectRecord.moveTween = null;
+    }
+    if (objectRecord.revolveTurnsPerSecond && objectRecord.revolveCenter) {
+      const revolveAngle = deltaSeconds * objectRecord.revolveTurnsPerSecond * Math.PI * 2;
+      const revolveAxisVector = objectRecord.revolveAxis === 'x'
+        ? new THREE.Vector3(1, 0, 0)
+        : objectRecord.revolveAxis === 'z' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+      objectRecord.mesh.position
+        .sub(objectRecord.revolveCenter)
+        .applyAxisAngle(revolveAxisVector, revolveAngle)
+        .add(objectRecord.revolveCenter);
+    }
+  }
+
+  const projectedCardPosition = new THREE.Vector3();
+
+  function positionCard(objectRecord) {
+    const cardElement = objectRecord.cardElement;
+    cardElement.style.opacity = String(objectRecord.currentOpacity);
+    cardElement.style.display = objectRecord.currentOpacity > 0.01 ? 'block' : 'none';
+    const isFocused = explainerState.focusedObjectIds && explainerState.focusedObjectIds.has(objectRecord.id);
+    cardElement.classList.toggle('is-highlighted', Boolean(objectRecord.highlightColor || isFocused));
+    projectedCardPosition.copy(objectRecord.mesh.getWorldPosition(new THREE.Vector3())).project(activeCamera);
+    cardElement.style.left = ((projectedCardPosition.x + 1) / 2 * stageElement.clientWidth) + 'px';
+    cardElement.style.top = ((1 - projectedCardPosition.y) / 2 * stageElement.clientHeight) + 'px';
+  }
+
   function resizeRendererToStage() {
     const stageWidth = Math.max(1, stageElement.clientWidth);
     const stageHeight = Math.max(1, stageElement.clientHeight);
@@ -1073,11 +1241,33 @@
     for (const objectRecord of explainerState.objectRecordsById.values()) {
       // Ease opacity toward its target for smooth show/hide/focus.
       objectRecord.currentOpacity += (objectRecord.targetOpacity - objectRecord.currentOpacity) * Math.min(1, deltaSeconds * 6);
+      objectRecord.mesh.visible = objectRecord.currentOpacity > 0.01;
+      updateObjectMotion(objectRecord, deltaSeconds);
+
+      if (objectRecord.cardElement) {
+        positionCard(objectRecord);
+        continue;
+      }
+
       objectRecord.material.opacity = objectRecord.currentOpacity;
       objectRecord.material.depthWrite = objectRecord.currentOpacity > 0.95;
-      objectRecord.mesh.visible = objectRecord.currentOpacity > 0.01;
 
-      if (objectRecord.material.emissive) {
+      // Trace lines progressively when they're being drawn.
+      if (objectRecord.drawProgress < objectRecord.drawTargetProgress) {
+        objectRecord.drawProgress = Math.min(objectRecord.drawTargetProgress, objectRecord.drawProgress + deltaSeconds / objectRecord.drawSecondsTotal);
+      }
+      const indexCount = objectRecord.mesh.geometry.index ? objectRecord.mesh.geometry.index.count : Infinity;
+      objectRecord.mesh.geometry.setDrawRange(0, objectRecord.drawProgress >= 1 ? Infinity : Math.floor(indexCount * objectRecord.drawProgress / 3) * 3);
+
+      if (!objectRecord.material.emissive) {
+        // Flat 2D materials have no glow, so highlights tint the color instead.
+        if (objectRecord.highlightColor) {
+          const pulse = 0.45 + Math.sin(elapsedSceneSeconds * 4) * 0.2;
+          objectRecord.material.color.copy(objectRecord.currentBaseColor).lerp(objectRecord.highlightColor, pulse);
+        } else {
+          objectRecord.material.color.copy(objectRecord.currentBaseColor);
+        }
+      } else {
         const isFocused = explainerState.focusedObjectIds && explainerState.focusedObjectIds.has(objectRecord.id);
         if (objectRecord.highlightColor) {
           const pulse = 0.55 + Math.sin(elapsedSceneSeconds * 4) * 0.25;
@@ -1114,11 +1304,7 @@
       clearTimeout(explainerState.stepAdvanceTimer);
       removeAllEffects();
       removeAllLabels();
-      for (const objectRecord of explainerState.objectRecordsById.values()) {
-        clearHighlight(objectRecord);
-        objectRecord.mesh.geometry.dispose();
-        objectRecord.material.dispose();
-      }
+      for (const objectRecord of [...explainerState.objectRecordsById.values()]) disposeSceneObject(objectRecord);
       explainerState.sceneObjectsGroup.clear();
       explainerState.objectRecordsById.clear();
       if (explainerState.floorGrid) {
@@ -1138,7 +1324,7 @@
       sceneTitleElement.textContent = explainerState.sceneDescription.title || 'heySona';
       loadingMessageElement.style.display = 'none';
 
-      asArray(explainerState.sceneDescription.objects).forEach(buildSceneObject);
+      asArray(explainerState.sceneDescription.objects).forEach((objectDescription) => buildSceneObject(objectDescription, false));
 
       if (!explainerState.isTwoDimensional && explainerState.sceneDescription.floor !== false) {
         const floorGrid = new THREE.GridHelper(24, 24, 0x3380ff, 0x2a3346);
@@ -1183,6 +1369,17 @@
     goToStep,
     play: () => setPlaying(true),
     pause: () => setPlaying(false),
+    /** Voice-driven playback calls this after the last step's narration,
+        so the play button turns into "replay". */
+    markFinished() {
+      explainerState.isPlaying = false;
+      refreshStepControls();
+    },
+    /** Shows a message in the stage while the scene is being prepared. */
+    showStatus(statusText) {
+      loadingMessageElement.textContent = String(statusText);
+      loadingMessageElement.style.display = 'flex';
+    },
     /** Test-only: runs the animation forward without waiting for the screen
         (an off-screen test window gets no animation frames). */
     advanceFramesForTesting(frameCount) {
