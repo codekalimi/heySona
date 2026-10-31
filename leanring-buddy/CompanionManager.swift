@@ -82,8 +82,9 @@ final class CompanionManager: ObservableObject {
         let ttsClient = ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
         ttsClient.speechVoiceProvider = speechVoiceProvider
         ttsClient.macSystemVoiceIdentifier = selectedMacSystemVoiceIdentifier
-        ttsClient.onFallbackToMacSystemVoice = { [weak self] elevenLabsFailureDescription in
-            self?.elevenLabsFallbackMessage = "ElevenLabs isn't working right now, so heySona is using the Mac voice. (\(elevenLabsFailureDescription))"
+        ttsClient.kokoroVoiceName = selectedKokoroVoiceName
+        ttsClient.onFallbackToMacSystemVoice = { [weak self] failedVoiceName, failureDescription in
+            self?.elevenLabsFallbackMessage = "\(failedVoiceName) isn't working right now, so heySona is using the Mac voice. (\(failureDescription))"
         }
         return ttsClient
     }()
@@ -259,6 +260,22 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(provider.rawValue, forKey: "speechVoiceProvider")
         elevenLabsTTSClient.speechVoiceProvider = provider
         elevenLabsFallbackMessage = nil
+        // Load the local voice when it's chosen; free its memory otherwise.
+        if provider == .kokoroLocalVoice {
+            KokoroVoiceModelManager.shared.prepare()
+        } else {
+            KokoroVoiceModelManager.shared.unload()
+        }
+    }
+
+    /// The Kokoro voice, like "af_heart"; nil uses the default. Persisted.
+    @Published private(set) var selectedKokoroVoiceName: String? =
+        UserDefaults.standard.string(forKey: "selectedKokoroVoiceName")
+
+    func setSelectedKokoroVoiceName(_ voiceName: String) {
+        selectedKokoroVoiceName = voiceName
+        UserDefaults.standard.set(voiceName, forKey: "selectedKokoroVoiceName")
+        elevenLabsTTSClient.kokoroVoiceName = voiceName
     }
 
     /// The installed Mac voice; nil uses the best one for the user's language.
@@ -477,6 +494,11 @@ final class CompanionManager: ObservableObject {
         bindShortcutTransitions()
         bindTypeToAskDoubleTap()
         restoreConversationContextFromArchive()
+        // Load the local AI voice now if it's the chosen voice, so the first
+        // reply doesn't wait for it.
+        if speechVoiceProvider == .kokoroLocalVoice {
+            KokoroVoiceModelManager.shared.prepare()
+        }
         // Load the on-device speech model now, so the first push-to-talk
         // doesn't wait for it.
         if speechToTextChoice == .whisperKit {
