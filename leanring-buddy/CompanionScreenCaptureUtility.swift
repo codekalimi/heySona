@@ -27,7 +27,14 @@ enum CompanionScreenCaptureUtility {
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    ///
+    /// The cursor's screen is captured sharper (small controls in pro apps
+    /// need the detail); other screens are smaller since they're context.
+    /// Screens are never upscaled beyond their native resolution.
+    static func captureAllScreensAsJPEG(
+        cursorScreenMaximumLongEdgeInPixels: Int = 1280,
+        otherScreensMaximumLongEdgeInPixels: Int = 1280
+    ) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -81,7 +88,10 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
             let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
+            let requestedMaximumLongEdge = isCursorScreen ? cursorScreenMaximumLongEdgeInPixels : otherScreensMaximumLongEdgeInPixels
+            let backingScaleFactor = nsScreenByDisplayID[display.displayID]?.backingScaleFactor ?? 1
+            let nativeLongEdgeInPixels = Int(max(displayFrame.width, displayFrame.height) * backingScaleFactor)
+            let maxDimension = max(640, min(requestedMaximumLongEdge, nativeLongEdgeInPixels))
             let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
             if display.width >= display.height {
                 configuration.width = maxDimension

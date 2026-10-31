@@ -30,6 +30,11 @@ extension CompanionManager {
         // The local time lets "remind me tomorrow at 3" or "what day is it"
         // resolve correctly.
         var userMessageContextLines = ["current local time: \(Self.currentLocalTimeDescription())"]
+        // Menus, panels, and shortcuts differ between apps and versions, so
+        // Claude is told exactly which app (and version) the user is in.
+        if let frontmostApplicationDescription = Self.frontmostApplicationDescription() {
+            userMessageContextLines.append("app in front: \(frontmostApplicationDescription) (match its menus, panel names, and shortcuts to this version)")
+        }
 
         if isScreenDrawingEnabled {
             systemPrompt += ScreenDrawingTagParser.systemPromptSection
@@ -37,6 +42,9 @@ extension CompanionManager {
 
         if isStepGuidanceEnabled {
             systemPrompt += StepGuidanceParser.systemPromptSection
+            if isGuidedModeEnabled {
+                systemPrompt += Self.guidedModeSystemPromptSection
+            }
         }
 
         if isVisualExplanationEnabled {
@@ -104,6 +112,21 @@ extension CompanionManager {
             }
             return (resultText: toolResult.resultText, isError: toolResult.isError)
         }
+    }
+
+    /// e.g. "DaVinci Resolve 19.1.3", or nil when heySona itself is in front.
+    /// The type-to-ask box doesn't activate heySona, so this is the app the
+    /// user was working in.
+    static func frontmostApplicationDescription() -> String? {
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+              frontmostApplication.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              let applicationName = frontmostApplication.localizedName else {
+            return nil
+        }
+        let applicationVersion = frontmostApplication.bundleURL
+            .flatMap { Bundle(url: $0) }?
+            .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return [applicationName, applicationVersion].compactMap { $0 }.joined(separator: " ")
     }
 
     /// e.g. "Saturday, October 31, 2026 at 3:12 PM (America/Los_Angeles)"
