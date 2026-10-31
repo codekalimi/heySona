@@ -89,6 +89,9 @@ final class CompanionManager: ObservableObject {
     /// speaks again so a new response can begin immediately.
     var currentResponseTask: Task<Void, Never>?
 
+    /// Voices the reply currently streaming in, if spoken replies are on.
+    var currentStreamingReplySpeaker: StreamingReplySpeaker?
+
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -497,6 +500,7 @@ final class CompanionManager: ObservableObject {
 
         // Cancel any in-progress response and TTS from a previous utterance
         currentResponseTask?.cancel()
+        currentStreamingReplySpeaker?.cancel()
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
         stopStepGuidance()
@@ -569,6 +573,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
+        currentStreamingReplySpeaker?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
@@ -596,6 +601,29 @@ final class CompanionManager: ObservableObject {
 
                 let requestSetup = makeRequestSetup(transcript: transcript)
 
+                // With spoken replies on, sentences are voiced as soon as
+                // they're written instead of after the whole reply arrives.
+                let streamingReplySpeaker: StreamingReplySpeaker? = isSpokenReplyEnabled
+                    ? StreamingReplySpeaker(
+                        elevenLabsTTSClient: elevenLabsTTSClient,
+                        screenCaptures: screenCaptures,
+                        isStepGuidanceEnabled: isStepGuidanceEnabled
+                    )
+                    : nil
+                currentStreamingReplySpeaker = streamingReplySpeaker
+                streamingReplySpeaker?.onFirstAudioStarted = { [weak self] in
+                    self?.voiceState = .responding
+                }
+                streamingReplySpeaker?.onSegmentStarted = { [weak self] segmentText in
+                    guard let self, self.isLiveCaptionsEnabled else { return }
+                    self.responseOverlayManager.showOverlayAndBeginStreaming()
+                    self.responseOverlayManager.updateStreamingText(segmentText)
+                }
+                streamingReplySpeaker?.onGuidanceStepReached = { [weak self] guidanceStep in
+                    self?.isGuidingThroughSteps = true
+                    self?.showGuidanceStep(guidanceStep)
+                }
+
                 let fullResponseText: String
                 do {
                     let streamingResult = try await claudeAPI.analyzeImageStreaming(
@@ -605,8 +633,8 @@ final class CompanionManager: ObservableObject {
                         userPrompt: requestSetup.userPrompt,
                         tools: requestSetup.toolDefinitions,
                         toolCallHandler: requestSetup.toolDefinitions.isEmpty ? nil : requestSetup.toolCallHandler,
-                        onTextChunk: { _ in
-                            // No streaming text display — spinner stays until TTS plays
+                        onTextChunk: { accumulatedResponseText in
+                            streamingReplySpeaker?.receive(accumulatedText: accumulatedResponseText)
                         }
                     )
                     fullResponseText = streamingResult.text
@@ -618,6 +646,10 @@ final class CompanionManager: ObservableObject {
                 }
 
                 guard !Task.isCancelled else { return }
+
+                // Voice whatever is left (e.g. a final sentence with no
+                // trailing space, or the decline message after a refusal).
+                streamingReplySpeaker?.finish(fullText: fullResponseText)
 
                 // Drawing tags come before the [POINT:...] tag, which must be
                 // last for its parser, so pull them out first. They're always
@@ -644,15 +676,19 @@ final class CompanionManager: ObservableObject {
                     from: parseResult.spokenText,
                     screenCaptures: screenCaptures
                 )
-                let guidanceSteps = isStepGuidanceEnabled ? stepExtraction.steps : []
+                // When streaming, steps were already attached to their
+                // sentences as they arrived; this list is for text-only replies.
+                let guidanceSteps = isStepGuidanceEnabled && streamingReplySpeaker == nil ? stepExtraction.steps : []
+                let isWalkingThroughSteps = !guidanceSteps.isEmpty || (streamingReplySpeaker?.guidanceStepCount ?? 0) > 0
                 let spokenText = stepExtraction.spokenTextWithoutStepTags
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil && guidanceSteps.isEmpty
-                if hasPointCoordinate {
+                let hasPointCoordinate = parseResult.coordinate != nil && !isWalkingThroughSteps
+                // If speech already started, the triangle is visible already.
+                if hasPointCoordinate && voiceState == .processing {
                     voiceState = .idle
                 }
 
@@ -666,7 +702,7 @@ final class CompanionManager: ObservableObject {
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
 
-                if guidanceSteps.isEmpty,
+                if !isWalkingThroughSteps,
                    let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
                     // Claude's coordinates are in the screenshot's pixel space
@@ -725,7 +761,31 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 // With spoken replies off, show the text in a bubble instead.
                 let hasReplyText = !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                if hasReplyText && !guidanceSteps.isEmpty {
+                if let streamingReplySpeaker {
+                    // Generation of a visual explanation starts now, but its
+                    // narration waits for this lead-in to finish speaking.
+                    if let visualExplanationBrief {
+                        startVisualExplanation(
+                            brief: visualExplanationBrief,
+                            userQuestion: transcript,
+                            waitForLeadInToFinish: { await streamingReplySpeaker.waitUntilFinished() }
+                        )
+                    }
+                    await streamingReplySpeaker.waitUntilFinished()
+                    if Task.isCancelled { return }
+                    if hasReplyText && !streamingReplySpeaker.didSpeakAnything {
+                        print("⚠️ ElevenLabs TTS: no sentence could be voiced")
+                        speakCreditsErrorFallback()
+                    }
+                    if isLiveCaptionsEnabled {
+                        responseOverlayManager.finishStreaming(afterDelayInSeconds: 1.5)
+                    }
+                    if isGuidingThroughSteps {
+                        // Keep the cursor on the last step for a moment.
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        isGuidingThroughSteps = false
+                    }
+                } else if hasReplyText && !guidanceSteps.isEmpty {
                     await presentReplyWithStepGuidance(spokenText: spokenText, guidanceSteps: guidanceSteps)
                 } else if hasReplyText && !isSpokenReplyEnabled {
                     responseOverlayManager.showOverlayAndBeginStreaming()
@@ -744,9 +804,9 @@ final class CompanionManager: ObservableObject {
                         speakCreditsErrorFallback()
                     }
                 }
-                // Started after the lead-in begins playing, so the explainer's
-                // narration waits for it instead of talking over it.
-                if let visualExplanationBrief, !Task.isCancelled {
+                // Text-only replies: start the visual explanation after the
+                // lead-in is shown. (Streaming replies started it above.)
+                if streamingReplySpeaker == nil, let visualExplanationBrief, !Task.isCancelled {
                     startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript)
                 }
 
