@@ -44,6 +44,8 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     var onLibraryEntryDeleted: ((_ explanationID: String) -> Void)?
     /// The user pressed the Map button.
     var onConceptMapRequested: (() -> Void)?
+    /// The renderer's layout self-check found (and maybe fixed) problems in a step.
+    var onStepIssuesReported: ((_ stepIndex: Int, _ issues: [String]) -> Void)?
     var onExplainerClosed: (() -> Void)?
 
     var isExplainerVisible: Bool {
@@ -120,6 +122,12 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     func showConceptMap(graphJSON: String) {
         bringPanelToFront()
         evaluateRendererScript("heySonaExplainer.showConceptMap(\(graphJSON))")
+    }
+
+    /// Swaps in a corrected step from the visual self-check.
+    func replaceStep(stepIndex: Int, stepJSON: String) {
+        guard Self.isJSONObject(stepJSON) else { return }
+        evaluateRendererScript("heySonaExplainer.replaceStep(\(stepIndex), \(stepJSON))")
     }
 
     func goToStep(_ stepIndex: Int) {
@@ -243,6 +251,11 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
             closeExplainer()
         case "libraryRequested":
             onLibraryRequested?()
+        case "stepIssues":
+            if let stepIndex = messageBody["index"] as? Int, let issues = messageBody["issues"] as? [String] {
+                print("🧪 Step \(stepIndex) layout: \(issues.joined(separator: "; "))")
+                onStepIssuesReported?(stepIndex, issues)
+            }
         case "conceptMapRequested":
             onConceptMapRequested?()
         case "libraryEntrySelected":
@@ -277,7 +290,7 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     // MARK: - Bundle Resources
 
     /// Finds a file inside VisualExplainer.bundle in the app's resources.
-    private static func bundledResourceURL(named resourceName: String, withExtension fileExtension: String) -> URL? {
+    static func bundledResourceURL(named resourceName: String, withExtension fileExtension: String) -> URL? {
         guard let explainerResourceFolderURL = Bundle.main.url(forResource: explainerResourceBundleName, withExtension: "bundle") else {
             return nil
         }

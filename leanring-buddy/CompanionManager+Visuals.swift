@@ -58,7 +58,10 @@ extension CompanionManager {
             elevenLabsTTSClient: elevenLabsTTSClient,
             explainerPanelManager: visualExplainerPanelManager,
             isNarrationEnabled: isSpokenReplyEnabled,
-            learnedTopicsDescription: ExplanationLibraryStore.learnedTopicsDescription()
+            learnedTopicsDescription: ExplanationLibraryStore.learnedTopicsDescription(),
+            topicSkillsText: SkillTools.userMessageSkillsText(
+                skillLibrary.skillsForVisualExplanation(briefAndQuestion: brief + " " + userQuestion)
+            )
         )
         visualExplanationSession.onSceneFailed = { [weak self] spokenFailureMessage in
             guard let self else { return }
@@ -87,11 +90,75 @@ extension CompanionManager {
                 title: sceneTitle,
                 question: explanationBeingFollowedUp?.question ?? userQuestion
             )
+            if self.isVisualSelfCheckEnabled, explanationBeingFollowedUp == nil {
+                self.reviewVisualExplanation(
+                    session: visualExplanationSession,
+                    sceneLines: sceneLines,
+                    sceneTitle: sceneTitle,
+                    savedExplanationID: savedExplanationID
+                )
+            }
         }
 
         visualExplanationSession.waitForLeadInToFinish = waitForLeadInToFinish
         currentVisualExplanationSession = visualExplanationSession
         visualExplanationSession.start()
+    }
+
+    /// Visual self-check: snapshot every step offscreen, ask Claude for
+    /// fixes, apply the ones the narration hasn't reached, and save all of
+    /// them so replays are fixed.
+    private func reviewVisualExplanation(
+        session reviewedSession: VisualExplanationSession,
+        sceneLines: [String],
+        sceneTitle: String,
+        savedExplanationID: String?
+    ) {
+        visualExplanationReviewTask?.cancel()
+        visualExplanationReviewTask = Task { [weak self] in
+            guard let self else { return }
+            let stepSnapshots = await self.visualExplanationReviewer.snapshotSteps(sceneLines: sceneLines)
+            guard !stepSnapshots.isEmpty, !Task.isCancelled else { return }
+            do {
+                let stepFixesByIndex = try await VisualExplanationReviewer.requestStepFixes(
+                    claudeAPI: self.claudeAPI,
+                    sceneLines: sceneLines,
+                    stepSnapshots: stepSnapshots,
+                    layoutIssuesDescription: reviewedSession.layoutIssueLines.joined(separator: " | ")
+                )
+                guard !Task.isCancelled else { return }
+                guard !stepFixesByIndex.isEmpty else {
+                    print("🧪 Visual self-check: every step looks fine")
+                    return
+                }
+
+                var correctedSceneLines = sceneLines
+                var liveFixCount = 0
+                for (stepIndex, stepJSON) in stepFixesByIndex where stepIndex + 1 < correctedSceneLines.count {
+                    correctedSceneLines[stepIndex + 1] = stepJSON
+                    if self.currentVisualExplanationSession === reviewedSession,
+                       reviewedSession.applyReviewedStepFix(stepIndex: stepIndex, stepJSON: stepJSON) {
+                        liveFixCount += 1
+                    }
+                }
+                print("🧪 Visual self-check: fixed \(stepFixesByIndex.count) step(s), \(liveFixCount) before they played")
+
+                if let savedExplanationID {
+                    ExplanationLibraryStore.save(
+                        sceneLines: correctedSceneLines,
+                        title: sceneTitle,
+                        question: self.openVisualExplanation?.question ?? "",
+                        concepts: nil,
+                        existingExplanationID: savedExplanationID
+                    )
+                }
+                if self.openVisualExplanation?.savedExplanationID == savedExplanationID {
+                    self.openVisualExplanation?.sceneLines = correctedSceneLines
+                }
+            } catch {
+                print("⚠️ Visual self-check failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Replays a saved explanation with narration, without asking Claude.

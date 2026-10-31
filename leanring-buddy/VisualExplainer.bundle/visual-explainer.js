@@ -88,12 +88,13 @@
     heySonaExplainer.setQuiz([...]) / .showQuiz() / .showLibrary([{ id, title, detail }])
     heySonaExplainer.continueScene()               follow-up steps are about to be appended
     heySonaExplainer.showConceptMap({ nodes: [{ id, label, kind, explanationId }], links: [{ from, to }] })
+    heySonaExplainer.replaceStep(index, step)       swap in a corrected step (visual self-check)
     heySonaExplainer.markFinished()                narration finished (offers the quiz)
   Messages to Swift (window.webkit.messageHandlers.heySona):
     { type: "ready" } | { type: "stepStarted", index, narration } | { type: "finished" }
     { type: "close" } | { type: "playPauseRequested", isPlaying } | { type: "error", message }
     { type: "libraryRequested" } | { type: "libraryEntrySelected", id } | { type: "libraryEntryDeleted", id }
-    { type: "conceptMapRequested" }
+    { type: "conceptMapRequested" } | { type: "stepIssues", index, issues: [string] }  (layout self-check)
     { type: "quizFinished", correctCount, questionCount }
 */
 
@@ -194,6 +195,12 @@
     pendingDelayedActions: [],
     /** Slider and scene variables by name (no prototype, so only real names resolve). */
     variables: Object.create(null),
+    /** Ids that the current step's actions named but don't exist. */
+    unknownIdsInCurrentStep: new Set(),
+    /** Seconds until the current step's layout check; null when none is due. */
+    secondsUntilLayoutCheck: null,
+    /** When the user last dragged or zoomed (auto-reframing waits for them). */
+    lastUserCameraInteractionTime: -Infinity,
   };
   threeScene.add(explainerState.sceneObjectsGroup);
 
@@ -929,7 +936,10 @@
       const labelLeft = (projectedLabelPosition.x + 1) / 2 * stageWidth;
       const labelTop = (1 - projectedLabelPosition.y) / 2 * stageHeight;
       labelRecord.element.style.left = Math.max(labelHalfWidth + 6, Math.min(stageWidth - labelHalfWidth - 6, labelLeft)) + 'px';
-      labelRecord.element.style.top = Math.max(labelHeight + 4, Math.min(stageHeight - 4, labelTop)) + 'px';
+      // Keep the label inside the stage, then apply the layout self-check's
+      // nudge (positive moves up) to where it's actually shown.
+      const clampedLabelTop = Math.max(labelHeight + 4, Math.min(stageHeight - 4, labelTop));
+      labelRecord.element.style.top = Math.max(labelHeight + 4, Math.min(stageHeight - 4, clampedLabelTop - (labelRecord.layoutNudgeInPixels || 0))) + 'px';
     }
   }
 
@@ -1305,6 +1315,7 @@
   // Drag to orbit (3d) or pan (2d); scroll to zoom.
   let lastPointerPosition = null;
   stageElement.addEventListener('pointerdown', (pointerEvent) => {
+    explainerState.lastUserCameraInteractionTime = performance.now();
     lastPointerPosition = { x: pointerEvent.clientX, y: pointerEvent.clientY };
     cameraRig.isUserDragging = true;
     explainerState.cameraTween = null;
@@ -1332,6 +1343,7 @@
   stageElement.addEventListener('pointercancel', endPointerDrag);
   stageElement.addEventListener('wheel', (wheelEvent) => {
     wheelEvent.preventDefault();
+    explainerState.lastUserCameraInteractionTime = performance.now();
     explainerState.cameraTween = null;
     const zoomFactor = Math.exp(wheelEvent.deltaY * 0.0015);
     if (explainerState.isTwoDimensional) {
@@ -1350,6 +1362,11 @@
     const targetRecords = targetIds
       .map((targetId) => explainerState.objectRecordsById.get(targetId))
       .filter(Boolean);
+    if (actionName !== 'unlabel' && actionName !== 'add') {
+      targetIds.forEach((targetId) => {
+        if (!explainerState.objectRecordsById.has(targetId)) explainerState.unknownIdsInCurrentStep.add(targetId);
+      });
+    }
 
     switch (actionName) {
       case 'show':
@@ -1614,7 +1631,11 @@
     }
 
     explainerState.currentStepIndex = stepIndex;
+    explainerState.unknownIdsInCurrentStep = new Set();
     asArray(steps[stepIndex].actions).forEach(applyOrDelayAction);
+    // Check the layout once delayed actions, fades, and camera moves settle.
+    const lastDelaySeconds = Math.max(0, ...asArray(steps[stepIndex].actions).map((action) => Number(action && action.delay) || 0));
+    explainerState.secondsUntilLayoutCheck = Math.min(30, lastDelaySeconds) + 1.4;
     showCaption(steps[stepIndex].narration || '');
     refreshStepControls();
     postToNative({ type: 'stepStarted', index: stepIndex, narration: steps[stepIndex].narration || '' });
@@ -1992,6 +2013,114 @@
   document.getElementById('concept-map-button').addEventListener('click', () => postToNative({ type: 'conceptMapRequested' }));
   document.getElementById('concept-map-close-button').addEventListener('click', () => { conceptMapPanel.hidden = true; });
 
+  // ─── Layout self-check ──────────────────────────────────────────────────
+  // After each step settles: find objects mostly off-screen, overlapping
+  // labels and cards, ids that don't exist, and an empty frame. Fix what can
+  // be fixed (reframe the camera, move labels apart) and report the rest.
+
+  function visibleMeshRecords() {
+    return [...explainerState.objectRecordsById.values()].filter((objectRecord) =>
+      !objectRecord.cardElement && objectRecord.isShown && objectRecord.targetOpacity > 0.3);
+  }
+
+  /** Share (0-1) of an object's on-screen bounding box that falls outside the stage. */
+  function shareOutsideStage(objectRecord) {
+    const boundingBox = new THREE.Box3().setFromObject(objectRecord.mesh);
+    if (boundingBox.isEmpty()) return 0;
+    let minimumX = Infinity, minimumY = Infinity, maximumX = -Infinity, maximumY = -Infinity;
+    for (const cornerX of [boundingBox.min.x, boundingBox.max.x]) {
+      for (const cornerY of [boundingBox.min.y, boundingBox.max.y]) {
+        for (const cornerZ of [boundingBox.min.z, boundingBox.max.z]) {
+          const projectedCorner = new THREE.Vector3(cornerX, cornerY, cornerZ).project(activeCamera);
+          minimumX = Math.min(minimumX, projectedCorner.x); maximumX = Math.max(maximumX, projectedCorner.x);
+          minimumY = Math.min(minimumY, projectedCorner.y); maximumY = Math.max(maximumY, projectedCorner.y);
+        }
+      }
+    }
+    const fullArea = Math.max(1e-6, (maximumX - minimumX) * (maximumY - minimumY));
+    const insideWidth = Math.max(0, Math.min(1, maximumX) - Math.max(-1, minimumX));
+    const insideHeight = Math.max(0, Math.min(1, maximumY) - Math.max(-1, minimumY));
+    return 1 - (insideWidth * insideHeight) / fullArea;
+  }
+
+  function overlapShare(firstRect, secondRect) {
+    const overlapWidth = Math.max(0, Math.min(firstRect.right, secondRect.right) - Math.max(firstRect.left, secondRect.left));
+    const overlapHeight = Math.max(0, Math.min(firstRect.bottom, secondRect.bottom) - Math.max(firstRect.top, secondRect.top));
+    const smallerArea = Math.max(1, Math.min(firstRect.width * firstRect.height, secondRect.width * secondRect.height));
+    return (overlapWidth * overlapHeight) / smallerArea;
+  }
+
+  function visibleLabelRecords() {
+    return [...explainerState.labelRecordsByKey.values()].filter((labelRecord) =>
+      labelRecord.element.classList.contains('is-visible') && labelRecord.element.style.display !== 'none');
+  }
+
+  function checkAndFixCurrentStepLayout() {
+    const stepIndex = explainerState.currentStepIndex;
+    if (stepIndex < 0) return;
+    const foundIssues = [];
+
+    explainerState.unknownIdsInCurrentStep.forEach((unknownId) => foundIssues.push('unknown id "' + unknownId + '"'));
+
+    const meshRecords = visibleMeshRecords();
+    const visibleCardCount = [...explainerState.objectRecordsById.values()].filter((objectRecord) => objectRecord.cardElement && objectRecord.isShown).length;
+    if (!meshRecords.length && !visibleCardCount) foundIssues.push('nothing visible');
+
+    const offStageIds = meshRecords.filter((objectRecord) => shareOutsideStage(objectRecord) > 0.3).map((objectRecord) => objectRecord.id);
+    if (offStageIds.length) {
+      foundIssues.push('mostly off-screen: ' + offStageIds.join(', '));
+      // Don't fight the user: skip reframing for a few seconds after they move the camera.
+      const isUserMovingCamera = performance.now() - explainerState.lastUserCameraInteractionTime < 4000 || cameraRig.isUserDragging;
+      if (!isUserMovingCamera) {
+        moveCamera({ fit: meshRecords.map((objectRecord) => objectRecord.id), seconds: 1.2 }, false);
+        foundIssues.push('fixed: reframed the camera');
+      }
+    }
+
+    // Move overlapping labels up, a few passes at most.
+    let nudgedLabelCount = 0;
+    for (let fixPass = 0; fixPass < 3; fixPass++) {
+      positionLabels();
+      const labelRecords = visibleLabelRecords();
+      const cardRects = [...explainerState.objectRecordsById.values()]
+        .filter((objectRecord) => objectRecord.cardElement && objectRecord.cardElement.style.display === 'block')
+        .map((objectRecord) => objectRecord.cardElement.getBoundingClientRect());
+      let movedThisPass = false;
+      // Compare the text pills only (not the leader lines below them).
+      const labelTextRect = (labelRecord) => labelRecord.element.querySelector('.scene-label-text').getBoundingClientRect();
+      labelRecords.forEach((labelRecord, labelIndex) => {
+        const labelRect = labelTextRect(labelRecord);
+        const overlapsEarlierLabel = labelRecords.slice(0, labelIndex).some((earlierLabel) => overlapShare(labelRect, labelTextRect(earlierLabel)) > 0.2);
+        const overlapsCard = cardRects.some((cardRect) => overlapShare(labelRect, cardRect) > 0.2);
+        if (overlapsEarlierLabel || overlapsCard) {
+          // Move up, or down when there's no room above. The direction is
+          // chosen once per label so it can't bounce back and forth.
+          const nudgeDistance = labelRect.height + 6;
+          if (!labelRecord.layoutNudgeDirection) {
+            const stageTop = stageElement.getBoundingClientRect().top;
+            labelRecord.layoutNudgeDirection = labelRect.top - nudgeDistance >= stageTop + 4 ? 1 : -1;
+          }
+          labelRecord.layoutNudgeInPixels = (labelRecord.layoutNudgeInPixels || 0) + labelRecord.layoutNudgeDirection * nudgeDistance;
+          nudgedLabelCount++;
+          movedThisPass = true;
+        }
+      });
+      if (!movedThisPass) break;
+    }
+    if (nudgedLabelCount) foundIssues.push('fixed: moved ' + nudgedLabelCount + ' overlapping label(s)');
+
+    const visibleCards = [...explainerState.objectRecordsById.values()].filter((objectRecord) => objectRecord.cardElement && objectRecord.cardElement.style.display === 'block');
+    for (let firstIndex = 0; firstIndex < visibleCards.length; firstIndex++) {
+      for (let secondIndex = firstIndex + 1; secondIndex < visibleCards.length; secondIndex++) {
+        if (overlapShare(visibleCards[firstIndex].cardElement.getBoundingClientRect(), visibleCards[secondIndex].cardElement.getBoundingClientRect()) > 0.2) {
+          foundIssues.push('cards overlap: ' + visibleCards[firstIndex].id + ' and ' + visibleCards[secondIndex].id);
+        }
+      }
+    }
+
+    if (foundIssues.length) postToNative({ type: 'stepIssues', index: stepIndex, issues: foundIssues });
+  }
+
   // ─── Render loop ────────────────────────────────────────────────────────
 
   /** Slides (move) and orbits (revolve) objects each frame. */
@@ -2066,6 +2195,13 @@
   function advanceAndRender(deltaSeconds) {
     elapsedSceneSeconds += deltaSeconds;
     advanceDelayedActions(deltaSeconds);
+    if (explainerState.secondsUntilLayoutCheck !== null) {
+      explainerState.secondsUntilLayoutCheck -= deltaSeconds;
+      if (explainerState.secondsUntilLayoutCheck <= 0) {
+        explainerState.secondsUntilLayoutCheck = null;
+        checkAndFixCurrentStepLayout();
+      }
+    }
 
     for (const objectRecord of explainerState.objectRecordsById.values()) {
       // Ease opacity toward its target for smooth show/hide/focus.
@@ -2221,6 +2357,13 @@
     showQuiz,
     showLibrary,
     showConceptMap,
+    /** Replaces a step (a visual self-check fix). Steps already shown keep
+        their current look until replayed. */
+    replaceStep(stepIndex, replacementStep) {
+      if (stepIndex >= 0 && stepIndex < explainerState.steps.length && replacementStep && typeof replacementStep === 'object') {
+        explainerState.steps[stepIndex] = replacementStep;
+      }
+    },
     /** A follow-up question is adding steps to this finished scene. */
     continueScene() {
       explainerState.stepsStillStreaming = true;

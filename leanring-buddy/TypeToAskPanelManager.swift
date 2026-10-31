@@ -136,7 +136,7 @@ final class TypeToAskPanelManager {
     /// Makes `application` the front app. Accessibility's "frontmost"
     /// attribute works even when macOS would decline a normal activation
     /// request; the request is still made in case Accessibility is off.
-    private static func bringApplicationToFront(_ application: NSRunningApplication) {
+    static func bringApplicationToFront(_ application: NSRunningApplication) {
         if AXIsProcessTrusted() {
             let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
             let accessibilityResult = AXUIElementSetAttributeValue(

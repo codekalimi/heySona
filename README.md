@@ -12,6 +12,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 ## Features
 
 - **Talk or type.** Hold **Control + Option** to talk, or double-tap **Control** to type a question in a Spotlight-style box.
+- **A quiet panel that makes room for answers.** The menu bar panel expands when you type a question or view a reply. Read and copy the latest answer, ask a follow-up, or collapse back to the compact controls. Questions sent from this panel reopen it after the screenshot, without taking keyboard focus; background voice questions stay unobtrusive.
 - **Sees your screen.** Each question includes a screenshot of every connected display, taken only when you ask.
 - **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick, or a free built-in Mac voice. Turn speech off and replies appear as a text bubble next to your cursor.
 - **Points at things.** A small blue cursor flies to the button, menu, or text it's talking about, on any monitor.
@@ -65,7 +66,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 | Hold **Control + Option**, speak, release | Ask about your screen |
 | Double-tap **Control**, type, **Enter** | Ask by typing |
 | **Esc** | Stop the current reply |
-| Click the menu bar icon | Open the panel (model picker, "Type a question", Settings) |
+| Click the menu bar icon | Open the companion panel (questions, latest reply, Library, model, and Settings) |
 | Click the gear in the panel | Open Settings |
 
 Things to try:
@@ -81,6 +82,8 @@ Things to try:
 ### Settings
 
 - **API keys:** save, replace, or remove each key (only the last 4 characters are ever shown).
+- **Skills:** short guides for topics (neural networks, Big O, recursion…) and apps (Xcode, Figma, DaVinci Resolve, Blender…) that heySona adds only when they fit. Add your own as Markdown files. After it guides you through a task, heySona can save the steps as a procedure and follow them next time.
+- **Visual self-check:** explanations fix their own layout (off-screen objects, overlapping labels); optionally, Claude reviews a snapshot of every step and corrects it.
 - **Conversation history:** heySona remembers past conversations across restarts, writes a short journal entry for each session so it knows what you've been learning, and can search older chats when you mention them. Stored only on your Mac (never screenshots); clear it anytime in Settings.
 - **Voice:** speak replies aloud or show them as text, choose ElevenLabs or the free Mac voice, pick a voice, and preview it.
 - **Mac actions:** turn all actions on or off.

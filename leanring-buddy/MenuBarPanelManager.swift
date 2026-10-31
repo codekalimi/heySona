@@ -3,19 +3,20 @@
 //  leanring-buddy
 //
 //  Manages the NSStatusItem (menu bar icon) and a custom borderless NSPanel
-//  that drops down below it when clicked. The panel hosts a SwiftUI view
-//  (CompanionPanelView) via NSHostingView. Uses the same NSPanel pattern as
-//  FloatingSessionButton and GlobalPushToTalkOverlay for consistency.
+//  that drops down below it when clicked. The panel hosts CompanionPanelView
+//  via NSHostingView and resizes between quiet controls and a conversation.
 //
 //  The panel is non-activating so it does not steal focus from the user's
 //  current app, and auto-dismisses when the user clicks outside.
 //
 
 import AppKit
+import Combine
 import SwiftUI
 
 extension Notification.Name {
     static let heySonaDismissPanel = Notification.Name("heySonaDismissPanel")
+    static let heySonaShowConversationPanel = Notification.Name("heySonaShowConversationPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -31,17 +32,20 @@ final class MenuBarPanelManager: NSObject {
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
     private var openSettingsObserver: NSObjectProtocol?
+    private var showConversationObserver: NSObjectProtocol?
+    private var panelLayoutCancellables = Set<AnyCancellable>()
+    private var applicationActiveBeforePanel: NSRunningApplication?
+    private var pendingQuestionSubmissionTask: Task<Void, Never>?
     private let settingsWindowManager: SettingsWindowManager
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 320
-    private let panelHeight: CGFloat = 380
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
         self.settingsWindowManager = SettingsWindowManager(companionManager: companionManager)
         super.init()
         createStatusItem()
+        observePanelLayout()
 
         dismissPanelObserver = NotificationCenter.default.addObserver(
             forName: .heySonaDismissPanel,
@@ -63,6 +67,14 @@ final class MenuBarPanelManager: NSObject {
                 self?.settingsWindowManager.showSettingsWindow()
             }
         }
+
+        showConversationObserver = NotificationCenter.default.addObserver(
+            forName: .heySonaShowConversationPanel, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.showPanel(takingKeyboardFocus: false)
+            }
+        }
     }
 
     deinit {
@@ -75,6 +87,10 @@ final class MenuBarPanelManager: NSObject {
         if let observer = openSettingsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = showConversationObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        pendingQuestionSubmissionTask?.cancel()
     }
 
     // MARK: - Status Item
@@ -161,14 +177,20 @@ final class MenuBarPanelManager: NSObject {
 
     // MARK: - Panel Lifecycle
 
-    private func showPanel() {
+    private func showPanel(takingKeyboardFocus: Bool = true) {
         if panel == nil {
             createPanel()
         }
 
         positionPanelBelowStatusItem()
 
-        panel?.makeKeyAndOrderFront(nil)
+        if takingKeyboardFocus {
+            let frontmostApplication = NSWorkspace.shared.frontmostApplication
+            if frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                applicationActiveBeforePanel = frontmostApplication
+            }
+            panel?.makeKeyAndOrderFront(nil)
+        }
         panel?.orderFrontRegardless()
         installClickOutsideMonitor()
     }
@@ -179,16 +201,21 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func createPanel() {
-        let companionPanelView = CompanionPanelView(companionManager: companionManager)
-            .frame(width: panelWidth)
+        let companionPanelView = CompanionPanelView(companionManager: companionManager) { [weak self] question in
+            self?.submitPanelQuestion(question)
+        }
+        let panelSize = companionManager.panelConversation.panelSize(isReady: isCompanionReady)
 
         let hostingView = NSHostingView(rootView: companionPanelView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+        // SwiftUI changes its preferred size as the panel expands; this manager
+        // owns the window frame so it stays anchored to the menu bar item.
+        hostingView.sizingOptions = []
+        hostingView.frame = NSRect(origin: .zero, size: panelSize)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear
 
         let menuBarPanel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
+            contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -198,7 +225,7 @@ final class MenuBarPanelManager: NSObject {
         menuBarPanel.level = .floating
         menuBarPanel.isOpaque = false
         menuBarPanel.backgroundColor = .clear
-        menuBarPanel.hasShadow = false
+        menuBarPanel.hasShadow = true
         menuBarPanel.hidesOnDeactivate = false
         menuBarPanel.isExcludedFromWindowsMenu = true
         menuBarPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -210,25 +237,78 @@ final class MenuBarPanelManager: NSObject {
         panel = menuBarPanel
     }
 
-    private func positionPanelBelowStatusItem() {
+    private var isCompanionReady: Bool {
+        companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted
+    }
+
+    private func observePanelLayout() {
+        companionManager.panelConversation.$isExpanded
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.schedulePanelLayoutUpdate() }
+            .store(in: &panelLayoutCancellables)
+
+        Publishers.CombineLatest4(
+            companionManager.$hasAccessibilityPermission,
+            companionManager.$hasScreenRecordingPermission,
+            companionManager.$hasMicrophonePermission,
+            companionManager.$hasScreenContentPermission
+        )
+        .map { accessibility, screenRecording, microphone, screenContent in
+            accessibility && screenRecording && microphone && screenContent
+        }
+        .combineLatest(companionManager.$hasCompletedOnboarding)
+        .map { allPermissionsGranted, hasCompletedOnboarding in allPermissionsGranted && hasCompletedOnboarding }
+        .removeDuplicates()
+        .sink { [weak self] _ in self?.schedulePanelLayoutUpdate() }
+        .store(in: &panelLayoutCancellables)
+    }
+
+    private func schedulePanelLayoutUpdate() {
+        // Published values are delivered before assignment, so measure on the
+        // next run-loop turn after both SwiftUI and the model see the new state.
+        DispatchQueue.main.async { [weak self] in
+            self?.positionPanelBelowStatusItem(animated: true)
+        }
+    }
+
+    private func submitPanelQuestion(_ question: String) {
+        guard isCompanionReady, !companionManager.showOnboardingVideo,
+              !companionManager.buddyDictationManager.isDictationInProgress else { return }
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        if frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            applicationActiveBeforePanel = frontmostApplication
+        }
+        hidePanel()
+        if let applicationActiveBeforePanel, !applicationActiveBeforePanel.isTerminated {
+            NSApp.yieldActivation(to: applicationActiveBeforePanel)
+            TypeToAskPanelManager.bringApplicationToFront(applicationActiveBeforePanel)
+        }
+        pendingQuestionSubmissionTask?.cancel()
+        pendingQuestionSubmissionTask = Task { [weak self] in
+            // Match type-to-ask's focus handoff: Claude should see the user's
+            // app, rather than heySona, when it builds the screenshot context.
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.companionManager.submitTypedQuestion(question, presentInMenuBar: true)
+        }
+    }
+
+    private func positionPanelBelowStatusItem(animated: Bool = false) {
         guard let panel else { return }
         guard let buttonWindow = statusItem?.button?.window else { return }
+        guard let screen = buttonWindow.screen ?? NSScreen.main else { return }
 
         let statusItemFrame = buttonWindow.frame
-        let gapBelowMenuBar: CGFloat = 4
-
-        // Calculate the panel's content height from the hosting view's fitting size
-        // so the panel snugly wraps the SwiftUI content instead of using a fixed height.
-        let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
-        let actualPanelHeight = fittingSize.height
-
-        // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
-        let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
+        let visibleFrame = screen.visibleFrame.insetBy(dx: 8, dy: 8)
+        companionManager.panelConversation.maximumPanelHeight = visibleFrame.height
+        let panelSize = companionManager.panelConversation.panelSize(isReady: isCompanionReady)
+        let panelOriginX = min(max(statusItemFrame.midX - panelSize.width / 2, visibleFrame.minX), visibleFrame.maxX - panelSize.width)
+        let panelOriginY = max(visibleFrame.minY, min(statusItemFrame.minY - 6, visibleFrame.maxY) - panelSize.height)
 
         panel.setFrame(
-            NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
-            display: true
+            NSRect(origin: CGPoint(x: panelOriginX, y: panelOriginY), size: panelSize),
+            display: true,
+            animate: animated && panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
     }
 

@@ -41,6 +41,10 @@ final class VisualExplanationSession {
 
     /// Narration text of every step received so far, by step index.
     private var stepNarrations: [String] = []
+    /// The furthest step shown so far; the self-check only replaces later ones.
+    private var highestStartedStepIndex = -1
+    /// Problems the renderer's layout self-check reported, for the Claude review.
+    private(set) var layoutIssueLines: [String] = []
     private var isSceneStreamFinished = false
     private var hasShownSceneHeader = false
 
@@ -74,6 +78,8 @@ final class VisualExplanationSession {
     /// Topics already explained (from the library), so this explanation can
     /// link back to them. Nil when nothing is saved yet.
     private let learnedTopicsDescription: String?
+    /// Topic skills matched to the brief (recipes for drawing this subject).
+    private let topicSkillsText: String?
     private var sceneTitle = "Explanation"
 
     init(
@@ -84,9 +90,11 @@ final class VisualExplanationSession {
         elevenLabsTTSClient: ElevenLabsTTSClient,
         explainerPanelManager: VisualExplainerPanelManager,
         isNarrationEnabled: Bool,
-        learnedTopicsDescription: String? = nil
+        learnedTopicsDescription: String? = nil,
+        topicSkillsText: String? = nil
     ) {
         self.learnedTopicsDescription = learnedTopicsDescription
+        self.topicSkillsText = topicSkillsText
         self.source = source
         self.explanationBrief = explanationBrief
         self.userQuestion = userQuestion
@@ -104,6 +112,9 @@ final class VisualExplanationSession {
         }
         explainerPanelManager.onPlayPauseRequested = { [weak self] isPlaying in
             self?.handleWindowPlayPause(isPlaying: isPlaying)
+        }
+        explainerPanelManager.onStepIssuesReported = { [weak self] stepIndex, issues in
+            self?.layoutIssueLines.append("step \(stepIndex): " + issues.joined(separator: "; "))
         }
 
         switch source {
@@ -155,6 +166,24 @@ final class VisualExplanationSession {
         elevenLabsTTSClient.stopPlayback()
         explainerPanelManager.onStepStarted = nil
         explainerPanelManager.onPlayPauseRequested = nil
+        explainerPanelManager.onStepIssuesReported = nil
+    }
+
+    /// Applies a visual self-check fix if the step hasn't been shown yet.
+    /// Returns whether it was applied live.
+    @discardableResult
+    func applyReviewedStepFix(stepIndex: Int, stepJSON: String) -> Bool {
+        guard stepIndex > highestStartedStepIndex, stepIndex < stepNarrations.count,
+              stepIndex + 1 < recordedSceneLines.count,
+              let stepObject = Self.jsonObject(from: stepJSON) else { return false }
+        stepNarrations[stepIndex] = stepObject["narration"] as? String ?? ""
+        recordedSceneLines[stepIndex + 1] = stepJSON
+        // Narration audio prepared from the old text is no longer right.
+        narrationAudioPreparationTasks[stepIndex]?.cancel()
+        narrationAudioPreparationTasks[stepIndex] = nil
+        preparedNarrationAudioByStepIndex[stepIndex] = nil
+        explainerPanelManager.replaceStep(stepIndex: stepIndex, stepJSON: stepJSON)
+        return true
     }
 
     // MARK: - Scene Streaming
@@ -186,7 +215,7 @@ final class VisualExplanationSession {
             What to explain: \(explanationBrief)
 
             Write the scene now, as JSON Lines.
-            """) + learnedTopicsSection
+            """) + learnedTopicsSection + (topicSkillsText.map { "\n\nTopic recipes to follow:\n" + $0 } ?? "")
 
         do {
             _ = try await claudeAPI.analyzeImageStreaming(
@@ -383,6 +412,7 @@ final class VisualExplanationSession {
     }
 
     private func narrateStep(_ stepIndex: Int) async {
+        highestStartedStepIndex = max(highestStartedStepIndex, stepIndex)
         let narrationText = stepNarrations[stepIndex].trimmingCharacters(in: .whitespacesAndNewlines)
         guard !narrationText.isEmpty else {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -433,6 +463,7 @@ final class VisualExplanationSession {
     // MARK: - Window Controls
 
     private func handleWindowStepStarted(stepIndex: Int) {
+        highestStartedStepIndex = max(highestStartedStepIndex, stepIndex)
         guard isNarrationEnabled else { return }
         if stepIndex == stepIndexRequestedByNarration { return }
 
@@ -615,19 +646,12 @@ final class VisualExplanationSession {
     - Show where the idea fits: what it builds on and what builds on it. When the user prompt lists topics the user has already learned, link to one or two of them where it truly helps ("remember arrays? a hash map is an array plus a clever way to pick the slot"), shown as a card or a line to a small labeled circle.
     - Point out the one key insight that makes the idea click, and compare it with a close neighbor when that clears up confusion (array versus linked list, stack versus queue, supervised versus unsupervised learning).
 
-    PLAYBOOK FOR COMPUTER SCIENCE, MATH, AND MACHINE LEARNING (use 2d unless the idea is physical):
-    - Arrays and strings: a row of rects with the index labeled under each and the value inside (a label at each rect's position). Pointers and indexes: small arrows or colored circles that "move" along the row.
-    - Linked lists, trees, graphs, tries, heaps: circles for nodes and lines for edges, laid out top to bottom for trees. Show a traversal or search by highlighting nodes in order, and a "flow" along the edges for the path taken.
-    - Algorithms (sorting, searching, two pointers, sliding window, dynamic programming): walk through a tiny input step by step; use "move" to swap or shift items and "highlight" for what is being compared. For dynamic programming, fill a small grid of rects one cell at a time.
-    - Stacks and queues: rects stacked or in a row; push and pop with "add", "move", and "hide".
-    - Big O and complexity: a graph with labeled axes (input size, steps) and plotted curves for 1, log n, n, n log n, and n squared, compared with a concrete count ("for a thousand items, that's about ten steps versus a million"). Add a slider for n with a card of live step counts.
-    - Recursion: nested rects or a call tree that grows downward, then collapses as answers return.
-    - Math (functions, derivatives, probability, linear algebra): a graph with axes; plot curves, show a tangent line for a derivative (a plotted line "f(a) + slope * (x - a)" with a slider for a), arrows for vectors, a grid that stretches for a matrix, bars for a distribution. Show the equation in a math card, and transform it one step at a time with "update".
-    - Neural networks: columns of circles (input, hidden, output layers) joined by lines; a "flow" left to right for the forward pass and right to left for backpropagation; thicker or brighter lines for bigger weights.
-    - Training and gradient descent: a plotted loss curve (a bowl) with an "iterate" plot of the steps down it, drawn with "draw", and a learning-rate slider so the user sees small steps crawl, good steps settle, and big steps overshoot or diverge; a loss-over-time line that falls.
-    - Transformers and attention: words as cards in a row, with lines between them whose brightness shows how much each word attends to the others.
-    - AI agents: a loop diagram of cards (goal, think, pick a tool, act, observe the result, repeat or answer) with a "flow" going around it, and tool cards off to the side.
+    DRAWING CS, MATH, AND ML IDEAS (use 2d unless the idea is physical):
+    - Data as shapes: arrays as rows of rects with the index under each and the value inside; nodes as circles joined by lines (trees top to bottom); pointers as small arrows or colored circles that move.
+    - Processes as motion: walk through a tiny input step by step with "move", "highlight", and "delay"; show flows (data, gradients, an agent's loop) with "flow".
+    - Math as graphs: labeled axes, "plot" curves, equations in "math" cards, and a slider for the number that matters.
     - Code: a card with "code": true holds a few lines of real code (under 8 short lines, with real line breaks written as \\n); narrate what it does in words, never read it out symbol by symbol.
+    - When the user prompt includes topic recipes, follow them: they hold the best analogy, example, and drawing for that subject.
 
     CONCEPTS: after the quiz, add one last line: {"concepts":{"main":"Hash map","related":["Array","Hash function","Set"],"prerequisites":["Array"]}} where main is the topic's short common name (2 to 4 words, title case), related lists 2 to 5 closely connected ideas, and prerequisites lists the ideas worth knowing first. Use the exact names of already-learned topics when they fit, so the user's concept map links them.
 
