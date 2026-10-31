@@ -28,7 +28,7 @@ extension CompanionManager {
 
     func toggleTypeToAskPanel() {
         if typeToAskPanelManager.isPanelVisible {
-            typeToAskPanelManager.hidePanel()
+            typeToAskPanelManager.hidePanel(returningFocusToPreviousApp: true)
         } else {
             openTypeToAskPanel()
         }
