@@ -14,7 +14,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 - **Talk or type.** Hold **Control + Option** to talk, or double-tap **Control** to type a question in a Spotlight-style box.
 - **A quiet panel that makes room for answers.** The menu bar panel expands when you type a question or view a reply. Read and copy the latest answer, ask a follow-up, or collapse back to the compact controls. Questions sent from this panel reopen it after the screenshot, without taking keyboard focus; background voice questions stay unobtrusive.
 - **Sees your screen.** Each question includes a screenshot of every connected display, taken only when you ask.
-- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick, or a free built-in Mac voice. Turn speech off and replies appear as a text bubble next to your cursor.
+- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick, a free built-in Mac voice, or a free, natural local AI voice (Kokoro) that runs on your Mac. Turn speech off and replies appear as a text bubble next to your cursor.
 - **Points at things.** A small blue cursor flies to the button, menu, or text it's talking about, on any monitor.
 - **Stop anytime.** Press **Esc** while heySona is thinking or speaking to cut it off.
 - **Does things on your Mac.** Open apps, links, and files; find files; play, pause, and skip tracks; change the volume; add reminders and calendar events; run your Shortcuts (you approve each one).
@@ -25,7 +25,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 
 ## Requirements
 
-- macOS 14.2 or later
+- macOS 15 or later (Apple Silicon for the local AI voice)
 - A recent version of Xcode (with its license accepted: open Xcode once and click **Agree**)
 - API keys:
   - [Anthropic](https://console.anthropic.com/settings/keys) (required)
