@@ -39,10 +39,19 @@ enum StoredAPIKeyKind: String, CaseIterable {
         }
     }
 
-    /// AssemblyAI is optional because the app falls back to Apple Speech
-    /// when no AssemblyAI key is saved.
+    /// AssemblyAI and ElevenLabs are optional: without them the app uses
+    /// Apple's speech recognition and the free Mac voice.
     var isRequired: Bool {
-        self != .assemblyAI
+        self == .anthropic
+    }
+
+    /// What heySona uses instead when an optional key is skipped.
+    var fallbackWithoutKeyDescription: String? {
+        switch self {
+        case .anthropic: return nil
+        case .assemblyAI: return "Apple's built-in speech recognition"
+        case .elevenLabs: return "the free built-in Mac voice"
+        }
     }
 }
 

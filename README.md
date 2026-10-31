@@ -13,7 +13,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 
 - **Talk or type.** Hold **Control + Option** to talk, or press **⌘⇧Space** to type a question in a Spotlight-style box.
 - **Sees your screen.** Each question includes a screenshot of every connected display, taken only when you ask.
-- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick. Turn speech off and replies appear as a text bubble next to your cursor.
+- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick, or a free built-in Mac voice. Turn speech off and replies appear as a text bubble next to your cursor.
 - **Points at things.** A small blue cursor flies to the button, menu, or text it's talking about, on any monitor.
 - **Stop anytime.** Press **Esc** while heySona is thinking or speaking to cut it off.
 - **Does things on your Mac.** Open apps, links, and files; find files; play, pause, and skip tracks; change the volume; add reminders and calendar events; run your Shortcuts (you approve each one).
@@ -28,7 +28,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 - A recent version of Xcode (with its license accepted: open Xcode once and click **Agree**)
 - API keys:
   - [Anthropic](https://console.anthropic.com/settings/keys) (required)
-  - [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) (required for spoken replies)
+  - [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) (optional: the most natural voice; without it, or when it runs out of credits, heySona uses the free built-in Mac voice)
   - [AssemblyAI](https://www.assemblyai.com/dashboard) (optional; or pick WhisperKit in Settings to transcribe on your Mac for free; with neither, heySona uses Apple's built-in speech recognition)
 
 ## Setup
@@ -81,7 +81,7 @@ Things to try:
 ### Settings
 
 - **API keys:** save, replace, or remove each key (only the last 4 characters are ever shown).
-- **Voice:** speak replies aloud or show them as text, pick an ElevenLabs voice, and preview it.
+- **Voice:** speak replies aloud or show them as text, choose ElevenLabs or the free Mac voice, pick a voice, and preview it.
 - **Mac actions:** turn all actions on or off.
 - **Memory:** turn memory on or off, review every remembered fact, delete one or all.
 - **Project:** turn project awareness on or off, and pin a fallback folder.
