@@ -92,6 +92,32 @@ final class CompanionManager: ObservableObject {
     /// Voices the reply currently streaming in, if spoken replies are on.
     var currentStreamingReplySpeaker: StreamingReplySpeaker?
 
+    // MARK: - Guided Mode State (behavior in CompanionManager+GuidedMode.swift)
+
+    /// When on, multi-step tasks continue after each of the user's clicks.
+    @Published private(set) var isGuidedModeEnabled: Bool = UserDefaults.standard.object(forKey: "isGuidedModeEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isGuidedModeEnabled")
+
+    func setGuidedModeEnabled(_ enabled: Bool) {
+        isGuidedModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isGuidedModeEnabled")
+        if !enabled {
+            stopGuidedMode()
+        }
+    }
+
+    /// True while heySona waits for the user's click to show the next step.
+    @Published var isWaitingForGuidedModeClick = false
+    /// The question that started the guided task, repeated to Claude each round.
+    var guidedTaskQuestion: String?
+    var guidedModeRoundCount = 0
+    var guidedModeClickMonitor: Any?
+    var guidedModeTimeoutTask: Task<Void, Never>?
+    /// Set while a guided round starts, so the usual "new question" cleanup
+    /// doesn't end guided mode.
+    var isContinuingGuidedTask = false
+
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -505,6 +531,9 @@ final class CompanionManager: ObservableObject {
         hideCaptionAndBubble()
         stopStepGuidance()
         stopVisualExplanation()
+        if !isContinuingGuidedTask {
+            stopGuidedMode()
+        }
         clearScreenDrawings()
         clearDetectedElementLocation()
 
@@ -581,8 +610,13 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // Capture all connected screens so the AI has full context.
+                // The cursor's screen is sent as sharp as the model can read.
+                let selectedModelOption = ClaudeModelCatalog.modelOption(forModelID: selectedModel) ?? ClaudeModelCatalog.defaultModelOption
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
+                    cursorScreenMaximumLongEdgeInPixels: selectedModelOption.screenshotMaximumLongEdgeInPixels,
+                    otherScreensMaximumLongEdgeInPixels: ClaudeModelCatalog.otherScreensMaximumLongEdgeInPixels
+                )
 
                 guard !Task.isCancelled else { return }
 
@@ -656,7 +690,12 @@ final class CompanionManager: ObservableObject {
                 // removed from the text so they're never spoken.
                 // A [VISUAL:...] brief means Claude wants to explain this in the
                 // visual explainer; the spoken reply is just a short lead-in.
-                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: fullResponseText)
+                // [WAIT_FOR_CLICK] asks heySona to wait for the user's click
+                // and then continue the task (guided mode).
+                let waitForClickExtraction = Self.removeWaitForClickTag(from: fullResponseText)
+                let shouldWaitForClickAfterReply = isGuidedModeEnabled && isStepGuidanceEnabled && waitForClickExtraction.didRequestWaitForClick
+
+                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: waitForClickExtraction.textWithoutTag)
                 let visualExplanationBrief = isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil
 
                 let drawingExtraction = ScreenDrawingTagParser.extractDrawings(
@@ -810,7 +849,19 @@ final class CompanionManager: ObservableObject {
                     startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript)
                 }
 
-                scheduleScreenDrawingsFadeOut()
+                if shouldWaitForClickAfterReply && !Task.isCancelled {
+                    // Keep the step circles up so the user sees what to click.
+                    if guidedTaskQuestion == nil {
+                        guidedTaskQuestion = transcript
+                    }
+                    startWaitingForGuidedModeClick(replyTextToKeepVisible: isSpokenReplyEnabled ? nil : spokenText)
+                } else {
+                    if guidedTaskQuestion != nil {
+                        print("🧭 Guided mode: task finished")
+                        stopGuidedMode()
+                    }
+                    scheduleScreenDrawingsFadeOut()
+                }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {

@@ -17,6 +17,12 @@ struct ClaudeModelOption: Identifiable, Equatable {
     /// request on another model when a safety classifier declines it.
     /// Claude Haiku 5.5 has no server-side fallback.
     let supportsServerSideRefusalFallback: Bool
+    /// Largest screenshot side sent for the cursor's screen. Opus and Sonnet
+    /// 5.5 read images up to 2576 px with pixel-accurate coordinates; 1920
+    /// (about 1080p) is the documented sweet spot for screenshots. Haiku 5.5's
+    /// limit isn't documented, so it stays at the older safe 1568 px; a larger
+    /// image would be shrunk by the API and pointing would land off target.
+    let screenshotMaximumLongEdgeInPixels: Int
 
     var id: String { modelID }
 }
@@ -26,21 +32,24 @@ enum ClaudeModelCatalog {
         modelID: "claude-haiku-5-5",
         pickerLabel: "Haiku",
         pickerDetail: "Fastest",
-        supportsServerSideRefusalFallback: false
+        supportsServerSideRefusalFallback: false,
+        screenshotMaximumLongEdgeInPixels: 1568
     )
 
     static let sonnet = ClaudeModelOption(
         modelID: "claude-sonnet-5-5",
         pickerLabel: "Sonnet",
         pickerDetail: "Balanced",
-        supportsServerSideRefusalFallback: true
+        supportsServerSideRefusalFallback: true,
+        screenshotMaximumLongEdgeInPixels: 1920
     )
 
     static let opus = ClaudeModelOption(
         modelID: "claude-opus-5-5",
         pickerLabel: "Opus",
         pickerDetail: "Smartest",
-        supportsServerSideRefusalFallback: true
+        supportsServerSideRefusalFallback: true,
+        screenshotMaximumLongEdgeInPixels: 1920
     )
 
     /// Picker order, fastest to smartest.
@@ -53,6 +62,9 @@ enum ClaudeModelCatalog {
     /// thinking brief while the current models still read screenshots well.
     /// Raise to "medium" if answers or pointing get less accurate.
     static let responseEffortLevel = "low"
+
+    /// Screens other than the cursor's are context only, so they're smaller.
+    static let otherScreensMaximumLongEdgeInPixels = 1024
 
     /// Room for adaptive thinking plus the reply. Thinking counts toward
     /// this limit, so a small value would cut replies off.

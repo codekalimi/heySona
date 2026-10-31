@@ -110,6 +110,16 @@ struct SettingsView: View {
                     )
 
                     settingsToggleRow(
+                        title: "Guided mode",
+                        detail: "For longer tasks (like in Resolve, FL Studio, or Figma), heySona waits for your click after each step, then shows the next one. Esc stops it.",
+                        isOn: Binding(
+                            get: { companionManager.isGuidedModeEnabled },
+                            set: { companionManager.setGuidedModeEnabled($0) }
+                        )
+                    )
+                    .opacity(companionManager.isStepGuidanceEnabled ? 1 : 0.5)
+
+                    settingsToggleRow(
                         title: "Visual explanations",
                         detail: "Ask \"explain how a rocket engine works\" or \"show me how the heart pumps blood\" and heySona builds an animated 3D model or diagram and narrates it step by step.",
                         isOn: Binding(

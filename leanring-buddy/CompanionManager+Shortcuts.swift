@@ -67,6 +67,7 @@ extension CompanionManager {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         currentStreamingReplySpeaker?.cancel()
+        stopGuidedMode()
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
         stopStepGuidance()
@@ -104,7 +105,9 @@ extension CompanionManager {
 
             // speakText returns as soon as playback starts, so also wait
             // for the audio itself to finish.
-            while self?.elevenLabsTTSClient.isPlaying == true {
+            // Also stay armed while guided mode waits for a click, so Esc
+            // can end it.
+            while self?.elevenLabsTTSClient.isPlaying == true || self?.isWaitingForGuidedModeClick == true {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
