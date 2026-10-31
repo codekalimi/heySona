@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
 		AA00BB062F6500060039DA55 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB052F6500050039DA55 /* WhisperKit */; };
 /* End PBXBuildFile section */
 
@@ -70,7 +69,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AA00BB032F6500030039DA55 /* Sparkle in Frameworks */,
 				AA00BB062F6500060039DA55 /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -132,7 +130,6 @@
 			);
 			name = "leanring-buddy";
 			packageProductDependencies = (
-				AA00BB022F6500020039DA55 /* Sparkle */,
 				AA00BB052F6500050039DA55 /* WhisperKit */,
 			);
 			productName = "leanring-buddy";
@@ -218,7 +215,6 @@
 			mainGroup = 28F22CB62F56440300A0FC59;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -627,14 +623,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.9.0;
-			};
-		};
 		AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift";
@@ -646,11 +634,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		AA00BB022F6500020039DA55 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
 		AA00BB052F6500050039DA55 /* WhisperKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
