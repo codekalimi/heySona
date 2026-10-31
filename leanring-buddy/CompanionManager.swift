@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import Carbon
 import Combine
 import Foundation
 import PostHog
@@ -94,6 +95,18 @@ final class CompanionManager: ObservableObject {
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+
+    // MARK: - Type-To-Ask And Stop Shortcuts
+
+    private let globalHotKeyRegistrar = GlobalHotKeyRegistrar()
+    private let typeToAskPanelManager = TypeToAskPanelManager()
+    /// cmd + shift + space, registered for the app's whole lifetime.
+    private var typeToAskHotKey: RegisteredGlobalHotKey?
+    /// Esc, registered only while a reply is being generated or spoken, so
+    /// Esc keeps working normally in other apps the rest of the time.
+    private var escapeToStopHotKey: RegisteredGlobalHotKey?
+    /// Waits for the current reply to finish, then releases the Esc hot key.
+    private var escapeToStopReleaseTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -217,6 +230,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        registerTypeToAskHotKeyIfNeeded()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -515,37 +529,7 @@ final class CompanionManager: ObservableObject {
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
-            // Cancel any pending transient hide so the overlay stays visible
-            transientHideTask?.cancel()
-            transientHideTask = nil
-
-            // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                isOverlayVisible = true
-            }
-
-            // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-
-            // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
-            responseOverlayManager.hideOverlay()
-            clearDetectedElementLocation()
-
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
+            prepareForNewInteraction()
 
             ClickyAnalytics.trackPushToTalkStarted()
 
@@ -575,6 +559,152 @@ final class CompanionManager: ObservableObject {
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
         case .none:
             break
+        }
+    }
+
+    /// Shared setup for every new question, spoken or typed: makes sure the
+    /// cursor overlay is showing and clears whatever the previous reply left.
+    private func prepareForNewInteraction() {
+        // Cancel any pending transient hide so the overlay stays visible
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        // If the cursor is hidden, bring it back transiently for this interaction
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        // Dismiss the menu bar panel so it doesn't cover the screen
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        // Cancel any in-progress response and TTS from a previous utterance
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        responseOverlayManager.hideOverlay()
+        clearDetectedElementLocation()
+
+        // Dismiss the onboarding prompt if it's showing
+        if showOnboardingPrompt {
+            withAnimation(.easeOut(duration: 0.3)) {
+                onboardingPromptOpacity = 0.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                self.showOnboardingPrompt = false
+                self.onboardingPromptText = ""
+            }
+        }
+    }
+
+    // MARK: - Type To Ask
+
+    private func registerTypeToAskHotKeyIfNeeded() {
+        guard typeToAskHotKey == nil else { return }
+        typeToAskHotKey = globalHotKeyRegistrar.register(
+            carbonKeyCode: kVK_Space,
+            carbonModifierFlags: cmdKey | shiftKey,
+            action: { [weak self] in
+                self?.toggleTypeToAskPanel()
+            }
+        )
+    }
+
+    private func toggleTypeToAskPanel() {
+        if typeToAskPanelManager.isPanelVisible {
+            typeToAskPanelManager.hidePanel()
+        } else {
+            openTypeToAskPanel()
+        }
+    }
+
+    /// Opens the Spotlight-style text box. Also used by the menu bar panel's
+    /// "Type a question" button.
+    func openTypeToAskPanel() {
+        // Same conditions as push-to-talk: setup must be finished and the
+        // onboarding video must not be playing.
+        guard hasCompletedOnboarding && allPermissionsGranted else {
+            print("⚠️ Type to ask: finish setup in the menu bar panel first")
+            return
+        }
+        guard !showOnboardingVideo else { return }
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        typeToAskPanelManager.showPanel(onSubmitQuestion: { [weak self] typedQuestion in
+            self?.submitTypedQuestion(typedQuestion)
+        })
+    }
+
+    private func submitTypedQuestion(_ typedQuestion: String) {
+        guard !buddyDictationManager.isDictationInProgress else { return }
+
+        prepareForNewInteraction()
+
+        lastTranscript = typedQuestion
+        print("⌨️ Companion received typed question: \(typedQuestion)")
+        ClickyAnalytics.trackUserMessageSent(transcript: typedQuestion)
+        sendTranscriptToClaudeWithScreenshot(transcript: typedQuestion)
+    }
+
+    // MARK: - Stop / Interrupt
+
+    /// Stops the current reply right away: cancels the Claude request if it's
+    /// still running, cuts off speech, and hides the text bubble. Triggered by
+    /// Esc while a reply is in progress.
+    func stopCurrentResponse() {
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        elevenLabsTTSClient.stopPlayback()
+        responseOverlayManager.hideOverlay()
+        clearDetectedElementLocation()
+
+        if voiceState != .listening {
+            voiceState = .idle
+        }
+
+        disarmEscapeToStop()
+        scheduleTransientHideIfNeeded()
+        print("⏹️ Companion response stopped by user")
+    }
+
+    /// Registers Esc as a stop key until the current reply has finished
+    /// generating and speaking. Must be called after `currentResponseTask`
+    /// is assigned so it waits on the right task.
+    private func armEscapeToStopUntilResponseFinishes() {
+        if escapeToStopHotKey == nil {
+            escapeToStopHotKey = globalHotKeyRegistrar.register(
+                carbonKeyCode: kVK_Escape,
+                carbonModifierFlags: 0,
+                action: { [weak self] in
+                    self?.stopCurrentResponse()
+                }
+            )
+        }
+
+        escapeToStopReleaseTask?.cancel()
+        let responseTaskToWaitFor = currentResponseTask
+        escapeToStopReleaseTask = Task { [weak self] in
+            await responseTaskToWaitFor?.value
+
+            // speakText returns as soon as playback starts, so also wait
+            // for the audio itself to finish.
+            while self?.elevenLabsTTSClient.isPlaying == true {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            guard !Task.isCancelled else { return }
+            self?.disarmEscapeToStop()
+        }
+    }
+
+    private func disarmEscapeToStop() {
+        escapeToStopReleaseTask?.cancel()
+        escapeToStopReleaseTask = nil
+        if let escapeToStopHotKey {
+            globalHotKeyRegistrar.unregister(escapeToStopHotKey)
+            self.escapeToStopHotKey = nil
         }
     }
 
@@ -768,6 +898,8 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+
+        armEscapeToStopUntilResponseFinishes()
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),

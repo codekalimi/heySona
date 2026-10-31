@@ -14,6 +14,7 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
     @State private var isSettingsButtonHovered = false
+    @State private var isTypeQuestionButtonHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -27,6 +28,12 @@ struct CompanionPanelView: View {
                 .padding(.horizontal, 16)
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                typeQuestionButton
+                    .padding(.horizontal, 16)
+
                 Spacer()
                     .frame(height: 12)
 
@@ -145,10 +152,16 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Hold Control+Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("Press ⌘⇧Space to type instead. Press Esc to stop a reply.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -612,6 +625,40 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Type A Question
+
+    private var typeQuestionButton: some View {
+        Button(action: {
+            companionManager.openTypeToAskPanel()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Type a question")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("⌘⇧Space")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .foregroundColor(DS.Colors.textSecondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(isTypeQuestionButtonHovered ? 0.1 : 0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in isTypeQuestionButtonHovered = hovering }
+        .pointerCursor()
     }
 
     // MARK: - Model Picker

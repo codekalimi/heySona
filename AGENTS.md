@@ -47,6 +47,12 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
+**Type To Ask**: `cmd + shift + space` (or the panel's "Type a question" button) opens a Spotlight-style non-activating text panel (`TypeToAskPanelManager`). Enter sends the typed question through the same `sendTranscriptToClaudeWithScreenshot` pipeline as voice; both paths share `prepareForNewInteraction()`. The app the user is in stays frontmost, and screenshots already exclude heySona's own windows.
+
+**Stop / Interrupt**: Esc stops the current reply (`stopCurrentResponse()`): cancels the Claude request, stops TTS, hides the text bubble. Esc is registered as a global hot key only while a reply is generating or speaking, then released, so it isn't swallowed in other apps. Pressing push-to-talk during a reply also interrupts it.
+
+**Global Hot Keys**: Type-to-ask and Esc use Carbon `RegisterEventHotKey` (`GlobalHotKeyRegistrar`), not the CGEvent tap, because a Carbon hot key consumes the keystroke so the frontmost app never receives it. Push-to-talk stays on the listen-only CGEvent tap because it's a modifier-only shortcut.
+
 **Transient Cursor Mode**: When "Show heySona" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
 ## Key Files
@@ -54,9 +60,9 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1070 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1200 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | Cursor-following text bubble for replies. Used when spoken replies are turned off in Settings. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -66,6 +72,8 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
+| `GlobalHotKeyRegistrar.swift` | ~120 | Registers consuming system-wide hot keys via Carbon `RegisterEventHotKey` (type-to-ask, Esc to stop). |
+| `TypeToAskPanelManager.swift` | ~170 | Spotlight-style floating text box for typing a question instead of speaking. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
