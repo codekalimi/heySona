@@ -30,6 +30,7 @@ struct SettingsView: View {
                     companionManager: companionManager,
                     conversationArchiveStore: companionManager.conversationArchiveStore
                 )
+                SkillsSettingsSection(skillLibrary: companionManager.skillLibrary)
                 ProjectAwarenessSettingsSection(companionManager: companionManager)
                 NotesSettingsSection(companionManager: companionManager)
                 modelSection
@@ -173,6 +174,15 @@ struct SettingsView: View {
                         )
                     )
                     .opacity(companionManager.isStepGuidanceEnabled ? 1 : 0.5)
+
+                    settingsToggleRow(
+                        title: "Double-check visuals",
+                        detail: "After a new visual explanation is made, Claude looks at a snapshot of every step and fixes anything cut off, overlapping, or not matching the narration. Costs one extra request per explanation.",
+                        isOn: Binding(
+                            get: { companionManager.isVisualSelfCheckEnabled },
+                            set: { companionManager.setVisualSelfCheckEnabled($0) }
+                        )
+                    )
 
                     settingsToggleRow(
                         title: "Visual explanations",

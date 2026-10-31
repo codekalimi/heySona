@@ -13,8 +13,17 @@
 //
 
 import AppKit
+import ApplicationServices
 import SwiftUI
 import WebKit
+
+/// Where the explainer window appears.
+enum ExplainerPlacement {
+    /// The full explainer, centered on the screen with the mouse.
+    case centered
+    /// A compact diagram beside the app the user is looking at ([VISUAL_DOCK]).
+    case dockedBesideFrontWindow
+}
 
 @MainActor
 final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWindowDelegate {
@@ -44,6 +53,8 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     var onLibraryEntryDeleted: ((_ explanationID: String) -> Void)?
     /// The user pressed the Map button.
     var onConceptMapRequested: (() -> Void)?
+    /// The renderer's layout self-check found (and maybe fixed) problems in a step.
+    var onStepIssuesReported: ((_ stepIndex: Int, _ issues: [String]) -> Void)?
     var onExplainerClosed: (() -> Void)?
 
     var isExplainerVisible: Bool {
@@ -122,16 +133,133 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
         evaluateRendererScript("heySonaExplainer.showConceptMap(\(graphJSON))")
     }
 
+    /// The step's narration started playing and lasts this long, so the page
+    /// can fire word-timed ("at") actions and pace the subtitles to it.
+    func startNarrationClock(stepIndex: Int, durationInSeconds: Double) {
+        guard durationInSeconds.isFinite, durationInSeconds > 0 else { return }
+        evaluateRendererScript("heySonaExplainer.startNarrationClock(\(stepIndex), \(durationInSeconds))")
+    }
+
+    /// Swaps in a corrected step from the visual self-check.
+    func replaceStep(stepIndex: Int, stepJSON: String) {
+        guard Self.isJSONObject(stepJSON) else { return }
+        evaluateRendererScript("heySonaExplainer.replaceStep(\(stepIndex), \(stepJSON))")
+    }
+
     func goToStep(_ stepIndex: Int) {
         evaluateRendererScript("heySonaExplainer.goToStep(\(stepIndex))")
     }
 
     private func bringPanelToFront() {
         createPanelIfNeeded()
+        if placement == .dockedBesideFrontWindow {
+            // Docked beside the user's app: show it without taking focus,
+            // so they keep working in their app (Esc still stops it).
+            explainerPanel?.orderFrontRegardless()
+            return
+        }
         // The app has no Dock icon; activate so the panel comes to the front
         // and receives keys (Esc, space, arrows).
         NSApp.activate(ignoringOtherApps: true)
         explainerPanel?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Placement
+
+    private(set) var placement: ExplainerPlacement = .centered
+    private static let centeredPanelSize = NSSize(width: 900, height: 640)
+    private static let dockedPanelSize = NSSize(width: 480, height: 360)
+
+    /// Switches between the centered explainer and a compact one docked
+    /// beside the front window. Moving happens only when the placement
+    /// changes, so a window the user moved stays put.
+    func setPlacement(_ newPlacement: ExplainerPlacement) {
+        let didPlacementChange = newPlacement != placement
+        placement = newPlacement
+        if didPlacementChange || newPlacement == .dockedBesideFrontWindow, let explainerPanel {
+            applyPlacement(to: explainerPanel)
+        }
+        evaluateRendererScript("heySonaExplainer.setCompact(\(newPlacement == .dockedBesideFrontWindow))")
+    }
+
+    private func applyPlacement(to panel: NSPanel) {
+        switch placement {
+        case .centered:
+            panel.minSize = NSSize(width: 560, height: 420)
+            if panel.frame.width < Self.centeredPanelSize.width * 0.8 {
+                panel.setContentSize(Self.centeredPanelSize)
+            }
+            centerPanelOnScreenWithMouse(panel)
+        case .dockedBesideFrontWindow:
+            panel.minSize = NSSize(width: 360, height: 280)
+            panel.setContentSize(Self.dockedPanelSize)
+            panel.setFrameOrigin(Self.dockedPanelOrigin(panelSize: panel.frame.size))
+        }
+    }
+
+    /// Beside the front window (right side first, then left), or inside its
+    /// bottom-right corner when there's no room, or the screen's corner.
+    private static func dockedPanelOrigin(panelSize: NSSize) -> NSPoint {
+        let gapBesideWindow: CGFloat = 12
+        if let frontWindowFrame = frontWindowFrameInAppKitCoordinates(),
+           let windowScreen = NSScreen.screens.first(where: { $0.frame.intersects(frontWindowFrame) }) ?? NSScreen.main {
+            let visibleFrame = windowScreen.visibleFrame
+            let topAlignedY = min(frontWindowFrame.maxY, visibleFrame.maxY) - panelSize.height
+            var dockedOrigin: NSPoint
+            if visibleFrame.maxX - frontWindowFrame.maxX >= panelSize.width + gapBesideWindow {
+                dockedOrigin = NSPoint(x: frontWindowFrame.maxX + gapBesideWindow, y: topAlignedY)
+            } else if frontWindowFrame.minX - visibleFrame.minX >= panelSize.width + gapBesideWindow {
+                dockedOrigin = NSPoint(x: frontWindowFrame.minX - gapBesideWindow - panelSize.width, y: topAlignedY)
+            } else {
+                dockedOrigin = NSPoint(x: frontWindowFrame.maxX - panelSize.width - 16, y: frontWindowFrame.minY + 16)
+            }
+            dockedOrigin.x = min(max(dockedOrigin.x, visibleFrame.minX), visibleFrame.maxX - panelSize.width)
+            dockedOrigin.y = min(max(dockedOrigin.y, visibleFrame.minY), visibleFrame.maxY - panelSize.height)
+            return dockedOrigin
+        }
+        let screenWithMouse = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+        let visibleFrame = screenWithMouse?.visibleFrame ?? NSRect(origin: .zero, size: panelSize)
+        return NSPoint(x: visibleFrame.maxX - panelSize.width - 16, y: visibleFrame.minY + 16)
+    }
+
+    /// The front app's focused window frame, via Accessibility (which heySona
+    /// already has for push-to-talk). Nil when heySona is in front or it's unavailable.
+    private static func frontWindowFrameInAppKitCoordinates() -> CGRect? {
+        guard AXIsProcessTrusted(),
+              let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+              frontmostApplication.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            return nil
+        }
+        let applicationElement = AXUIElementCreateApplication(frontmostApplication.processIdentifier)
+        var focusedWindowValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(applicationElement, kAXFocusedWindowAttribute as CFString, &focusedWindowValue) == .success,
+              let focusedWindowValue, CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        let focusedWindowElement = focusedWindowValue as! AXUIElement
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(focusedWindowElement, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(focusedWindowElement, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue, let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
+            return nil
+        }
+        var windowTopLeft = CGPoint.zero
+        var windowSize = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &windowTopLeft),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &windowSize) else {
+            return nil
+        }
+        // Accessibility measures from the top-left of the primary screen;
+        // AppKit from the bottom-left.
+        let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(
+            x: windowTopLeft.x,
+            y: primaryScreenHeight - windowTopLeft.y - windowSize.height,
+            width: windowSize.width,
+            height: windowSize.height
+        )
     }
 
     func closeExplainer() {
@@ -148,24 +276,56 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
         let webView = WKWebView(frame: .zero, configuration: webViewConfiguration)
 
         let panelSize = NSSize(width: 900, height: 640)
+        // A titled window keeps native rounded corners, shadow, and edge
+        // resizing; its title bar and buttons are hidden so the explanation
+        // fills the whole frosted-glass window instead of looking like a
+        // separate app with a video player.
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         panel.title = "heySona Explainer"
+        panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        for windowButtonType in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(windowButtonType)?.isHidden = true
+        }
         panel.appearance = NSAppearance(named: .darkAqua)
-        panel.backgroundColor = NSColor(DS.Colors.background)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 560, height: 420)
-        panel.contentView = webView
+
+        // Frosted glass behind a transparent page.
+        let glassBackgroundView = NSVisualEffectView(frame: NSRect(origin: .zero, size: panelSize))
+        glassBackgroundView.material = .hudWindow
+        glassBackgroundView.blendingMode = .behindWindow
+        glassBackgroundView.state = .active
+        glassBackgroundView.autoresizingMask = [.width, .height]
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.frame = glassBackgroundView.bounds
+        webView.autoresizingMask = [.width, .height]
+        glassBackgroundView.addSubview(webView)
+
+        // The page covers the title bar area, so this strip is what moves the window.
+        let dragStripView = ExplainerWindowDragStripView(frame: NSRect(
+            x: 0,
+            y: panelSize.height - ExplainerWindowDragStripView.stripHeight,
+            width: panelSize.width,
+            height: ExplainerWindowDragStripView.stripHeight
+        ))
+        dragStripView.autoresizingMask = [.width, .minYMargin]
+        glassBackgroundView.addSubview(dragStripView)
+
+        panel.contentView = glassBackgroundView
         panel.delegate = self
-        centerPanelOnScreenWithMouse(panel)
+        applyPlacement(to: panel)
 
         explainerPanel = panel
         explainerWebView = webView
@@ -243,6 +403,11 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
             closeExplainer()
         case "libraryRequested":
             onLibraryRequested?()
+        case "stepIssues":
+            if let stepIndex = messageBody["index"] as? Int, let issues = messageBody["issues"] as? [String] {
+                print("🧪 Step \(stepIndex) layout: \(issues.joined(separator: "; "))")
+                onStepIssuesReported?(stepIndex, issues)
+            }
         case "conceptMapRequested":
             onConceptMapRequested?()
         case "libraryEntrySelected":
@@ -277,11 +442,26 @@ final class VisualExplainerPanelManager: NSObject, WKScriptMessageHandler, NSWin
     // MARK: - Bundle Resources
 
     /// Finds a file inside VisualExplainer.bundle in the app's resources.
-    private static func bundledResourceURL(named resourceName: String, withExtension fileExtension: String) -> URL? {
+    static func bundledResourceURL(named resourceName: String, withExtension fileExtension: String) -> URL? {
         guard let explainerResourceFolderURL = Bundle.main.url(forResource: explainerResourceBundleName, withExtension: "bundle") else {
             return nil
         }
         let resourceURL = explainerResourceFolderURL.appendingPathComponent("\(resourceName).\(fileExtension)")
         return FileManager.default.fileExists(atPath: resourceURL.path) ? resourceURL : nil
+    }
+}
+
+/// A thin transparent strip along the top edge of the explainer window. The
+/// web page fills the window (including the hidden title bar), so dragging
+/// this strip, marked by a small handle drawn by the page, moves the window.
+private final class ExplainerWindowDragStripView: NSView {
+    static let stripHeight: CGFloat = 16
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
     }
 }

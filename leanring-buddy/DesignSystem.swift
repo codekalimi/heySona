@@ -16,6 +16,27 @@ import AppKit
 /// Usage: `DS.Colors.background`, `DS.Colors.accent`, etc.
 enum DS {
 
+    /// Native adaptive surfaces for the menu bar companion and its conversation.
+    enum CompanionPanel {
+        static let background = adaptiveColor(light: "#F7F8FB", dark: "#191C22")
+        static let surface = adaptiveColor(light: "#FFFFFF", dark: "#242831")
+        static let text = Color(nsColor: .labelColor)
+        static let secondaryText = Color(nsColor: .secondaryLabelColor)
+        static let border = Color(nsColor: .separatorColor).opacity(0.5)
+        static let accent = Color.blue
+        static let accentSurface = Color.blue.opacity(0.12)
+        static let hover = Color.primary.opacity(0.06)
+        static let cornerRadius: CGFloat = 22
+
+        private static func adaptiveColor(light: String, dark: String) -> Color {
+            let lightColor = NSColor(Color(hex: light))
+            let darkColor = NSColor(Color(hex: dark))
+            return Color(nsColor: NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+            })
+        }
+    }
+
     // MARK: - Color Tokens
 
     enum Colors {

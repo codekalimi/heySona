@@ -127,6 +127,7 @@ extension CompanionManager {
         conversationSessionSummaryTask?.cancel()
         conversationArchiveStore.clearAll()
         conversationHistory = []
+        panelConversation.clear()
         currentConversationSessionID = UUID().uuidString
         lastConversationExchangeDate = nil
     }

@@ -16,6 +16,7 @@ extension CompanionManager {
     /// Opens the built-in rocket engine demo (Settings > Visuals).
     func showVisualExplainerDemo() {
         stopVisualExplanation()
+        visualExplainerPanelManager.setPlacement(.centered)
         openVisualExplanation = nil
         configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showDemoRocketExplanation()
@@ -23,6 +24,7 @@ extension CompanionManager {
 
     /// Opens the explainer window on the saved-explanations list.
     func showVisualExplanationLibrary() {
+        visualExplainerPanelManager.setPlacement(.centered)
         configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showPreparingStatus("Pick an explanation from your library.")
         visualExplainerPanelManager.showLibrary(entriesJSON: ExplanationLibraryStore.libraryEntriesJSON())
@@ -30,6 +32,7 @@ extension CompanionManager {
 
     /// Opens the explainer window on the concept map of everything learned.
     func showConceptMap() {
+        visualExplainerPanelManager.setPlacement(.centered)
         configureVisualExplainerWindowCallbacks()
         visualExplainerPanelManager.showPreparingStatus("Here's how the ideas you've learned connect.")
         visualExplainerPanelManager.showConceptMap(graphJSON: ExplanationLibraryStore.conceptGraphJSON())
@@ -42,10 +45,15 @@ extension CompanionManager {
         brief: String,
         userQuestion: String,
         isFollowUp: Bool = false,
+        isDockedBesideUserWindow: Bool = false,
         waitForLeadInToFinish: (() async -> Void)? = nil
     ) {
         stopVisualExplanation()
         configureVisualExplainerWindowCallbacks()
+        // Follow-ups stay wherever the open explanation is.
+        if !isFollowUp {
+            visualExplainerPanelManager.setPlacement(isDockedBesideUserWindow ? .dockedBesideFrontWindow : .centered)
+        }
 
         let explanationBeingFollowedUp = isFollowUp ? openVisualExplanation : nil
         print(explanationBeingFollowedUp == nil ? "🎬 Visual explanation requested: \(brief)" : "🎬 Visual follow-up requested: \(brief)")
@@ -58,7 +66,11 @@ extension CompanionManager {
             elevenLabsTTSClient: elevenLabsTTSClient,
             explainerPanelManager: visualExplainerPanelManager,
             isNarrationEnabled: isSpokenReplyEnabled,
-            learnedTopicsDescription: ExplanationLibraryStore.learnedTopicsDescription()
+            learnedTopicsDescription: ExplanationLibraryStore.learnedTopicsDescription(),
+            topicSkillsText: SkillTools.userMessageSkillsText(
+                skillLibrary.skillsForVisualExplanation(briefAndQuestion: brief + " " + userQuestion)
+            ),
+            isDockedBesideUserWindow: isDockedBesideUserWindow
         )
         visualExplanationSession.onSceneFailed = { [weak self] spokenFailureMessage in
             guard let self else { return }
@@ -87,11 +99,75 @@ extension CompanionManager {
                 title: sceneTitle,
                 question: explanationBeingFollowedUp?.question ?? userQuestion
             )
+            if self.isVisualSelfCheckEnabled, explanationBeingFollowedUp == nil {
+                self.reviewVisualExplanation(
+                    session: visualExplanationSession,
+                    sceneLines: sceneLines,
+                    sceneTitle: sceneTitle,
+                    savedExplanationID: savedExplanationID
+                )
+            }
         }
 
         visualExplanationSession.waitForLeadInToFinish = waitForLeadInToFinish
         currentVisualExplanationSession = visualExplanationSession
         visualExplanationSession.start()
+    }
+
+    /// Visual self-check: snapshot every step offscreen, ask Claude for
+    /// fixes, apply the ones the narration hasn't reached, and save all of
+    /// them so replays are fixed.
+    private func reviewVisualExplanation(
+        session reviewedSession: VisualExplanationSession,
+        sceneLines: [String],
+        sceneTitle: String,
+        savedExplanationID: String?
+    ) {
+        visualExplanationReviewTask?.cancel()
+        visualExplanationReviewTask = Task { [weak self] in
+            guard let self else { return }
+            let stepSnapshots = await self.visualExplanationReviewer.snapshotSteps(sceneLines: sceneLines)
+            guard !stepSnapshots.isEmpty, !Task.isCancelled else { return }
+            do {
+                let stepFixesByIndex = try await VisualExplanationReviewer.requestStepFixes(
+                    claudeAPI: self.claudeAPI,
+                    sceneLines: sceneLines,
+                    stepSnapshots: stepSnapshots,
+                    layoutIssuesDescription: reviewedSession.layoutIssueLines.joined(separator: " | ")
+                )
+                guard !Task.isCancelled else { return }
+                guard !stepFixesByIndex.isEmpty else {
+                    print("🧪 Visual self-check: every step looks fine")
+                    return
+                }
+
+                var correctedSceneLines = sceneLines
+                var liveFixCount = 0
+                for (stepIndex, stepJSON) in stepFixesByIndex where stepIndex + 1 < correctedSceneLines.count {
+                    correctedSceneLines[stepIndex + 1] = stepJSON
+                    if self.currentVisualExplanationSession === reviewedSession,
+                       reviewedSession.applyReviewedStepFix(stepIndex: stepIndex, stepJSON: stepJSON) {
+                        liveFixCount += 1
+                    }
+                }
+                print("🧪 Visual self-check: fixed \(stepFixesByIndex.count) step(s), \(liveFixCount) before they played")
+
+                if let savedExplanationID {
+                    ExplanationLibraryStore.save(
+                        sceneLines: correctedSceneLines,
+                        title: sceneTitle,
+                        question: self.openVisualExplanation?.question ?? "",
+                        concepts: nil,
+                        existingExplanationID: savedExplanationID
+                    )
+                }
+                if self.openVisualExplanation?.savedExplanationID == savedExplanationID {
+                    self.openVisualExplanation?.sceneLines = correctedSceneLines
+                }
+            } catch {
+                print("⚠️ Visual self-check failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Replays a saved explanation with narration, without asking Claude.
@@ -101,6 +177,7 @@ extension CompanionManager {
             return
         }
         stopVisualExplanation()
+        visualExplainerPanelManager.setPlacement(.centered)
         configureVisualExplainerWindowCallbacks()
         print("📚 Replaying \"\(savedExplanation.title)\"")
 
@@ -258,6 +335,19 @@ extension CompanionManager {
         screenDrawingsFadeOutTask?.cancel()
         screenDrawings = drawingsToShow
         print("✏️ Drawing \(drawingsToShow.count) annotation(s) on screen")
+    }
+
+    /// Adds one drawing as the voice reaches its sentence (live drawing on
+    /// the real screen). Keeps the newest few so the screen stays readable.
+    func addScreenDrawingWhileSpeaking(_ liveDrawing: ScreenDrawing) {
+        screenDrawingsFadeOutTask?.cancel()
+        var updatedDrawings = screenDrawings
+        updatedDrawings.append(liveDrawing)
+        if updatedDrawings.count > ScreenDrawingTagParser.maximumDrawingCount {
+            updatedDrawings.removeFirst(updatedDrawings.count - ScreenDrawingTagParser.maximumDrawingCount)
+        }
+        screenDrawings = updatedDrawings
+        print("✏️ Drew \(liveDrawing.label ?? "an annotation") while speaking")
     }
 
     func clearScreenDrawings() {

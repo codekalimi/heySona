@@ -25,6 +25,7 @@ enum CompanionVoiceState {
 final class CompanionManager: ObservableObject {
     @Published var voiceState: CompanionVoiceState = .idle
     @Published var lastTranscript: String?
+    let panelConversation = CompanionPanelConversation()
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published var hasAccessibilityPermission = false
     @Published var hasScreenRecordingPermission = false
@@ -95,6 +96,19 @@ final class CompanionManager: ObservableObject {
 
     /// Past exchanges and session summaries, saved on this Mac.
     let conversationArchiveStore = ConversationArchiveStore()
+    /// Topic, app, and saved-procedure skills (SkillLibrary.swift).
+    let skillLibrary = SkillLibrary()
+
+    /// Optional Claude review of new visual explanations (VisualExplanationReviewer.swift).
+    @Published private(set) var isVisualSelfCheckEnabled: Bool =
+        UserDefaults.standard.bool(forKey: "isVisualSelfCheckEnabled")
+    let visualExplanationReviewer = VisualExplanationReviewer()
+    var visualExplanationReviewTask: Task<Void, Never>?
+
+    func setVisualSelfCheckEnabled(_ isEnabled: Bool) {
+        isVisualSelfCheckEnabled = isEnabled
+        UserDefaults.standard.set(isEnabled, forKey: "isVisualSelfCheckEnabled")
+    }
     /// When on, exchanges are saved, summarized, searchable, and restored at launch.
     @Published var isConversationHistoryEnabled: Bool =
         UserDefaults.standard.object(forKey: "isConversationHistoryEnabled") as? Bool ?? true
@@ -450,9 +464,8 @@ final class CompanionManager: ObservableObject {
 
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
-    var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
+    @Published var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
+        didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
     }
 
     func start() {
@@ -619,6 +632,7 @@ final class CompanionManager: ObservableObject {
         // Cancel any in-progress response and TTS from a previous utterance
         currentResponseTask?.cancel()
         currentStreamingReplySpeaker?.cancel()
+        panelConversation.interrupt()
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
         stopStepGuidance()
@@ -693,13 +707,17 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    func sendTranscriptToClaudeWithScreenshot(transcript: String, presentInMenuBar: Bool = false) {
         currentResponseTask?.cancel()
         currentStreamingReplySpeaker?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        let panelQuestion = isContinuingGuidedTask ? (guidedTaskQuestion ?? transcript) : transcript
+        let panelExchangeID = panelConversation.beginQuestion(panelQuestion)
 
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
+            var didPresentConversationPanel = false
+            // The cursor keeps its processing state while the menu panel can
+            // independently display the reply as it streams.
             voiceState = .processing
 
             do {
@@ -728,18 +746,29 @@ final class CompanionManager: ObservableObject {
 
                 let requestSetup = makeRequestSetup(transcript: transcript)
 
+                // Capture the user's app and screen before showing our panel. A
+                // background voice question never opens it over the user's work.
+                if presentInMenuBar {
+                    NotificationCenter.default.post(name: .heySonaShowConversationPanel, object: nil)
+                    didPresentConversationPanel = true
+                }
+
                 // With spoken replies on, sentences are voiced as soon as
                 // they're written instead of after the whole reply arrives.
                 let streamingReplySpeaker: StreamingReplySpeaker? = isSpokenReplyEnabled
                     ? StreamingReplySpeaker(
                         elevenLabsTTSClient: elevenLabsTTSClient,
                         screenCaptures: screenCaptures,
-                        isStepGuidanceEnabled: isStepGuidanceEnabled
+                        isStepGuidanceEnabled: isStepGuidanceEnabled,
+                        isLiveDrawingEnabled: isScreenDrawingEnabled
                     )
                     : nil
                 currentStreamingReplySpeaker = streamingReplySpeaker
                 streamingReplySpeaker?.onFirstAudioStarted = { [weak self] in
                     self?.voiceState = .responding
+                }
+                streamingReplySpeaker?.onDrawingReached = { [weak self] liveDrawing in
+                    self?.addScreenDrawingWhileSpeaking(liveDrawing)
                 }
                 streamingReplySpeaker?.onSegmentStarted = { [weak self] segmentText in
                     guard let self, self.isLiveCaptionsEnabled else { return }
@@ -761,6 +790,8 @@ final class CompanionManager: ObservableObject {
                         tools: requestSetup.toolDefinitions,
                         toolCallHandler: requestSetup.toolDefinitions.isEmpty ? nil : requestSetup.toolCallHandler,
                         onTextChunk: { accumulatedResponseText in
+                            guard !Task.isCancelled else { return }
+                            self.panelConversation.receive(accumulatedResponseText, for: panelExchangeID)
                             streamingReplySpeaker?.receive(accumulatedText: accumulatedResponseText)
                         }
                     )
@@ -792,15 +823,20 @@ final class CompanionManager: ObservableObject {
                 // that scene; [VISUAL:...] starts a new one.
                 let followUpExtraction = VisualExplanationSession.extractVisualFollowUpBrief(from: waitForClickExtraction.textWithoutTag)
                 let visualExplanationFollowUpBrief = isVisualExplanationEnabled && openVisualExplanation != nil ? followUpExtraction.brief : nil
-                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: followUpExtraction.textWithoutTag)
+                let dockExtraction = VisualExplanationSession.extractVisualDockBrief(from: followUpExtraction.textWithoutTag)
+                let visualExplanationExtraction = VisualExplanationSession.extractVisualExplanationBrief(from: dockExtraction.textWithoutTag)
                 let isVisualExplanationFollowUp = visualExplanationFollowUpBrief != nil
-                let visualExplanationBrief = visualExplanationFollowUpBrief ?? (isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil)
+                let dockedVisualExplanationBrief = isVisualExplanationEnabled && !isVisualExplanationFollowUp ? dockExtraction.brief : nil
+                let isVisualExplanationDocked = dockedVisualExplanationBrief != nil
+                let visualExplanationBrief = visualExplanationFollowUpBrief ?? dockedVisualExplanationBrief ?? (isVisualExplanationEnabled ? visualExplanationExtraction.brief : nil)
 
                 let drawingExtraction = ScreenDrawingTagParser.extractDrawings(
                     from: visualExplanationExtraction.textWithoutTag,
                     screenCaptures: screenCaptures
                 )
-                if isScreenDrawingEnabled && !drawingExtraction.drawings.isEmpty {
+                // Drawings already drawn while speaking aren't drawn twice.
+                let didDrawWhileSpeaking = (streamingReplySpeaker?.liveDrawingCount ?? 0) > 0
+                if isScreenDrawingEnabled && !drawingExtraction.drawings.isEmpty && !didDrawWhileSpeaking {
                     showScreenDrawings(drawingExtraction.drawings)
                 }
 
@@ -818,6 +854,7 @@ final class CompanionManager: ObservableObject {
                 let guidanceSteps = isStepGuidanceEnabled && streamingReplySpeaker == nil ? stepExtraction.steps : []
                 let isWalkingThroughSteps = !guidanceSteps.isEmpty || (streamingReplySpeaker?.guidanceStepCount ?? 0) > 0
                 let spokenText = stepExtraction.spokenTextWithoutStepTags
+                panelConversation.finish(spokenText, for: panelExchangeID)
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -907,6 +944,7 @@ final class CompanionManager: ObservableObject {
                             brief: visualExplanationBrief,
                             userQuestion: transcript,
                             isFollowUp: isVisualExplanationFollowUp,
+                            isDockedBesideUserWindow: isVisualExplanationDocked,
                             waitForLeadInToFinish: { await streamingReplySpeaker.waitUntilFinished() }
                         )
                     }
@@ -946,7 +984,7 @@ final class CompanionManager: ObservableObject {
                 // Text-only replies: start the visual explanation after the
                 // lead-in is shown. (Streaming replies started it above.)
                 if streamingReplySpeaker == nil, let visualExplanationBrief, !Task.isCancelled {
-                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript, isFollowUp: isVisualExplanationFollowUp)
+                    startVisualExplanation(brief: visualExplanationBrief, userQuestion: transcript, isFollowUp: isVisualExplanationFollowUp, isDockedBesideUserWindow: isVisualExplanationDocked)
                 }
 
                 if shouldWaitForClickAfterReply && !Task.isCancelled {
@@ -965,7 +1003,15 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
+                guard !Task.isCancelled else { return }
                 print("⚠️ Companion response error: \(error)")
+                panelConversation.fail(
+                    "I couldn't finish this reply. Check your connection and API settings, then try again.",
+                    for: panelExchangeID
+                )
+                if presentInMenuBar && !didPresentConversationPanel {
+                    NotificationCenter.default.post(name: .heySonaShowConversationPanel, object: nil)
+                }
                 speakCreditsErrorFallback()
             }
 
