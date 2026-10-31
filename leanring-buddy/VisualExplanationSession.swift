@@ -349,7 +349,7 @@ final class VisualExplanationSession {
                 if Task.isCancelled { return }
             }
             guard stepIndex < stepNarrations.count else {
-                if recordedQuizLine != nil, let quizInvitationAudio = try? await elevenLabsTTSClient.synthesizeSpeechAudio("now, a quick quiz to check your understanding.") {
+                if recordedQuizLine != nil, let quizInvitationAudio = try? await elevenLabsTTSClient.synthesizeSpeechAudio("when you're ready, try the quick quiz to check your understanding.") {
                     if Task.isCancelled { return }
                     try? elevenLabsTTSClient.playSpeechAudio(quizInvitationAudio)
                 }
@@ -558,7 +558,7 @@ final class VisualExplanationSession {
     - tube: "points": [[x,y,z], ...], "radius" (smooth pipes, vessels, wires)
     - line: "points": [[x,y,z], ...], "width" (straight segments: graph curves, axes, timelines, arrows' paths). "drawn": false starts it invisible so a "draw" action traces it. For a graph, compute the curve's points yourself (up to 60 points) and scale them into the view.
     - rect: "size": [w,h]   circle: "radius"   ring: "innerRadius", "outerRadius" (flat shapes; in 3d rotate [-90,0,0] to lay flat)
-    - card: "title", "text", "width" (pixels, 180-260) — a text box at "position" for definitions, notes, timeline events. Keep text under 25 words.
+    - card: "title", "text", "width" (pixels, 180-260) — a text box at "position" for definitions, notes, timeline events. Keep text under 25 words. "math": a LaTeX equation typeset above the text (KaTeX), for example "math":"w_{\\\\text{new}} = w - \\\\eta \\\\frac{dL}{dw}" (in JSON every LaTeX backslash is written twice).
 
     ACTIONS (inside each step's "actions"; "targets" is an id or a list of ids):
     - show / hide: {"do":"show","targets":[...]}
@@ -578,7 +578,18 @@ final class VisualExplanationSession {
     - camera: {"do":"camera","fit":["id1","id2"],"angle":[45,20],"seconds":1.6} frames those objects; {"do":"camera","fit":true} frames everything.
     - orbit: {"do":"orbit","enabled":false} stops the slow auto-rotation.
     - clearEffects: removes earlier arrows, flows, and plumes.
+    - update: {"do":"update","target":"eqCard","math":"...","text":"...","title":"..."} changes a card's content with a soft transition: show an equation turning into the next form one step at a time, or a running total.
+    - label also takes "math" instead of "text" for a short equation label: {"do":"label","position":[x,y,z],"math":"y = x^2"}.
+    TIMING: any action can have "delay" (seconds after the step starts), so one step plays as a sequence instead of all at once: compare, then swap, then highlight the next pair; or light up a network layer by layer (delays 0, 0.8, 1.6). Keep the last delay within the time the narration takes to speak (about 2.5 words per second), and describe the sequence in the narration in the same order.
     Actions from earlier steps stay in effect (labels, flows, highlights) until you undo them, so tidy up: unlabel old labels and clearEffects when the focus moves on.
+
+    LIVE SLIDERS (let the user play with the idea; use them whenever a number controls the behavior: learning rate, input size n, k in k-nearest neighbors, a probability, a function's coefficients, temperature, momentum):
+    - Show one with {"do":"slider","id":"lr","label":"Learning rate","min":0.01,"max":1.05,"step":0.01,"value":0.1}. The id is a variable name. One or two sliders per scene, usually in the last step or two, with narration that invites the user to drag it and says what to watch for ("drag the learning rate up and watch the steps start to overshoot"). The slider panel sits in the top-left corner of the stage, so keep that area empty. {"do":"hideSliders"} removes them.
+    - Optional setup field "variables": {"lr": 0.1} gives starting values, so objects can use a variable before its slider appears.
+    - Things react through expressions: strings with numbers, variables, + - * / ^, parentheses, pi, and the functions sin cos tan sqrt abs exp ln log log2 log10 min max floor ceil round pow sigmoid. No other code.
+    - "bind" on any object: {"bind":{"position":[x,y,z],"scale":s or [sx,sy,sz],"opacity":o}}, each value a number or an expression like "lr * 4" (null keeps that axis). A rect scales from its center, so to grow a bar upward from a baseline at y = -3, bind both "scale":[1,"h",1] and "position":[x,"-3 + h * height / 2",0] (height = the rect's own height).
+    - "plot" on a line instead of "points": {"plot":{"y":"a * x^2","from":-3,"to":3,"samples":80,"origin":[ox,oy],"unit":[sx,sy]}} draws y = f(x); graph point (x, y) lands at scene (ox + x * sx, oy + y * sy). Or the path of a repeated update: {"plot":{"iterate":{"start":2.8,"next":"x - lr * 2 * x","count":10},"y":"x^2","origin":[...],"unit":[...],"markers":0.15}} plots x, next(x), next(next(x)), ... with a dot at each point (gradient descent steps, Newton's method, a recurrence). Plots redraw instantly when a slider moves, and work with "drawn": false and "draw".
+    - Live numbers: "[[expression]]" inside card title, text, or math, or label text, shows the current value, for example "text":"Steps needed: [[ceil(log2(n))]]" or "math":"w_{\\\\text{new}} = w - [[lr]] \\\\cdot 2w".
 
     MAKING IT GOOD
     - 5 to 9 steps. Build understanding in this order: the problem it solves (why it exists), a real-world analogy, what it is and its parts, how it works on a tiny concrete example, the key insight, how it connects to other ideas, a one-sentence summary.
@@ -592,7 +603,7 @@ final class VisualExplanationSession {
     SIMPLE ENGLISH (the user wants to understand deeply, not be impressed):
     - Short sentences and everyday words, as if explaining to a smart friend who is new to the topic. One idea per sentence.
     - Use a technical word only when it matters, and say what it means the first time, in plain words ("a pointer, which is the address of where something lives in memory").
-    - Intuition first, then the precise idea. Show a formula only after its meaning is clear, as a card, and say aloud what it means in words ("the new weight is the old weight minus a small step downhill"), never by reading symbols.
+    - Intuition first, then the precise idea. Show a formula only after its meaning is clear, as a card with "math", and say aloud what it means in words ("the new weight is the old weight minus a small step downhill"), never by reading symbols.
     - Use small, concrete numbers in examples (five items, not n; a learning rate of 0.1, not alpha).
     - Never say "simply", "just", "obviously", or "trivially".
 
@@ -609,11 +620,11 @@ final class VisualExplanationSession {
     - Linked lists, trees, graphs, tries, heaps: circles for nodes and lines for edges, laid out top to bottom for trees. Show a traversal or search by highlighting nodes in order, and a "flow" along the edges for the path taken.
     - Algorithms (sorting, searching, two pointers, sliding window, dynamic programming): walk through a tiny input step by step; use "move" to swap or shift items and "highlight" for what is being compared. For dynamic programming, fill a small grid of rects one cell at a time.
     - Stacks and queues: rects stacked or in a row; push and pop with "add", "move", and "hide".
-    - Big O and complexity: a graph with labeled axes (input size, steps) and drawn curves for 1, log n, n, n log n, and n squared, compared with a concrete count ("for a thousand items, that's about ten steps versus a million").
+    - Big O and complexity: a graph with labeled axes (input size, steps) and plotted curves for 1, log n, n, n log n, and n squared, compared with a concrete count ("for a thousand items, that's about ten steps versus a million"). Add a slider for n with a card of live step counts.
     - Recursion: nested rects or a call tree that grows downward, then collapses as answers return.
-    - Math (functions, derivatives, probability, linear algebra): a graph with axes; draw curves, show a tangent line for a derivative, arrows for vectors, a grid that stretches for a matrix, bars for a distribution.
+    - Math (functions, derivatives, probability, linear algebra): a graph with axes; plot curves, show a tangent line for a derivative (a plotted line "f(a) + slope * (x - a)" with a slider for a), arrows for vectors, a grid that stretches for a matrix, bars for a distribution. Show the equation in a math card, and transform it one step at a time with "update".
     - Neural networks: columns of circles (input, hidden, output layers) joined by lines; a "flow" left to right for the forward pass and right to left for backpropagation; thicker or brighter lines for bigger weights.
-    - Training and gradient descent: a loss curve (a bowl-shaped line) with a sphere that moves down it in smaller and smaller steps; a loss-over-time line that falls.
+    - Training and gradient descent: a plotted loss curve (a bowl) with an "iterate" plot of the steps down it, drawn with "draw", and a learning-rate slider so the user sees small steps crawl, good steps settle, and big steps overshoot or diverge; a loss-over-time line that falls.
     - Transformers and attention: words as cards in a row, with lines between them whose brightness shows how much each word attends to the others.
     - AI agents: a loop diagram of cards (goal, think, pick a tool, act, observe the result, repeat or answer) with a "flow" going around it, and tool cards off to the side.
     - Code: a card with "code": true holds a few lines of real code (under 8 short lines, with real line breaks written as \\n); narrate what it does in words, never read it out symbol by symbol.

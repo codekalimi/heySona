@@ -27,9 +27,25 @@
     line (points [[x,y,z], ...], width; straight segments, for graphs, axes,
     timelines; "drawn": false starts it invisible so "draw" can trace it),
     card (title, text, width in pixels; an HTML text box anchored at position;
-    "code": true shows the text as code in a monospace font),
+    "code": true shows the text as code in a monospace font; "math": "LaTeX"
+    typesets an equation with KaTeX, above the text),
     gear (radius, teeth, thickness, innerRadius, holeRadius; faces +z),
     capsule (radius, height; rounded ends), spring (radius, height, coils, wireRadius).
+  Any action can have "delay": seconds, so one step plays in sequence
+  (swap, then swap, then highlight) instead of all at once.
+
+  Live sliders: { "do": "slider", "id": "lr", "label": "Learning rate", "min": 0.01,
+  "max": 1, "step": 0.01, "value": 0.1 } shows a slider; its id is a variable.
+  Objects react through expressions (numbers, + - * / ^, parentheses, pi, e,
+  sin cos tan sqrt abs exp ln log log2 log10 min max floor ceil round pow):
+    "bind": { "position": [x, y, z], "scale": s | [x, y, z], "opacity": o }
+                         each value a number or an expression string like "lr * 4"
+    line "plot": { "y": "a * x^2", "from": -3, "to": 3, "samples": 60,
+                   "origin": [x, y], "unit": [sx, sy], "markers": 0.12 }
+                   or { "iterate": { "start": 2.5, "next": "x - lr * 2 * x", "count": 12 }, "y": "x^2", ... }
+                   (points of x, then next(x), ...: gradient descent steps)
+    "[[expression]]" inside card title/text/math and label text shows a live value.
+  Optional top-level "variables": { "a": 1 } sets starting values.
   Optional top-level "quiz": [{ "question", "choices": [...], "answerIndex", "explanation" }]
   is offered after the last step (and by the Quiz button).
 
@@ -59,6 +75,9 @@
     revolve / stopRevolve { "do": "revolve", "targets": "earth", "center": [0,0,0], "speed": 0.2, "axis": "y" }
                          orbit around a point (turns per second; axis defaults to z in 2d)
     add                  { "do": "add", "objects": [<object>, ...] }   bring in new objects during a step
+    update               { "do": "update", "target": "eq", "math": "...", "text": "...", "title": "..." }
+                         change a card's content (equation transforms, running totals)
+    slider / hideSliders see "Live sliders" above
 
   ─── JavaScript API (called from Swift) ──────────────────────────────────
     heySonaExplainer.loadScene(scene, { autoAdvance: true, stepsStillStreaming: false })
@@ -171,6 +190,10 @@
     /** id or position-key → label record. */
     labelRecordsByKey: new Map(),
     cameraTween: null,
+    /** Actions waiting for their "delay": { action, remainingSeconds }. */
+    pendingDelayedActions: [],
+    /** Slider and scene variables by name (no prototype, so only real names resolve). */
+    variables: Object.create(null),
   };
   threeScene.add(explainerState.sceneObjectsGroup);
 
@@ -215,6 +238,181 @@
     return boundingBox.getCenter(new THREE.Vector3());
   }
 
+  // ─── Expressions (live sliders) ─────────────────────────────────────────
+  // A small math parser, so scenes can say "lr * 4" without running code.
+
+  const expressionFunctions = {
+    sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan,
+    sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, log2: Math.log2,
+    log10: Math.log10, floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign,
+    min: Math.min, max: Math.max, pow: Math.pow,
+    sigmoid: (value) => 1 / (1 + Math.exp(-value)),
+  };
+  const expressionConstants = { pi: Math.PI, e: Math.E };
+  const compiledExpressionsBySource = new Map();
+
+  function tokenizeExpression(expressionSource) {
+    const tokenPattern = /\s*(?:(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z_][A-Za-z_0-9]*)|(\*\*|[-+*\/^%(),]))/y;
+    const expressionTokens = [];
+    tokenPattern.lastIndex = 0;
+    while (tokenPattern.lastIndex < expressionSource.length) {
+      if (/^\s*$/.test(expressionSource.slice(tokenPattern.lastIndex))) break;
+      const tokenMatch = tokenPattern.exec(expressionSource);
+      if (!tokenMatch) throw new Error('unexpected character');
+      if (tokenMatch[1] !== undefined) expressionTokens.push({ kind: 'number', value: Number(tokenMatch[1]) });
+      else if (tokenMatch[2] !== undefined) expressionTokens.push({ kind: 'name', value: tokenMatch[2] });
+      else expressionTokens.push({ kind: 'symbol', value: tokenMatch[3] === '**' ? '^' : tokenMatch[3] });
+    }
+    return expressionTokens;
+  }
+
+  /** Returns a function (variableLookup) => number, or throws on bad syntax. */
+  function parseExpression(expressionSource) {
+    if (expressionSource.length > 400) throw new Error('expression too long');
+    const expressionTokens = tokenizeExpression(expressionSource);
+    let tokenIndex = 0;
+    const peekToken = () => expressionTokens[tokenIndex];
+    const isSymbol = (symbolText) => peekToken() && peekToken().kind === 'symbol' && peekToken().value === symbolText;
+    const expectSymbol = (symbolText) => {
+      if (!isSymbol(symbolText)) throw new Error('expected ' + symbolText);
+      tokenIndex++;
+    };
+
+    function parseSum() {
+      let leftSide = parseProduct();
+      while (isSymbol('+') || isSymbol('-')) {
+        const operatorText = expressionTokens[tokenIndex++].value;
+        const leftOperand = leftSide;
+        const rightOperand = parseProduct();
+        leftSide = operatorText === '+'
+          ? (lookup) => leftOperand(lookup) + rightOperand(lookup)
+          : (lookup) => leftOperand(lookup) - rightOperand(lookup);
+      }
+      return leftSide;
+    }
+
+    function startsOperand() {
+      const token = peekToken();
+      return token && (token.kind !== 'symbol' || token.value === '(');
+    }
+
+    function parseProduct() {
+      let leftSide = parseUnary();
+      while (isSymbol('*') || isSymbol('/') || isSymbol('%') || startsOperand()) {
+        // "2x" and "2(x + 1)" mean multiplication.
+        const operatorText = startsOperand() ? '*' : expressionTokens[tokenIndex++].value;
+        const leftOperand = leftSide;
+        const rightOperand = parseUnary();
+        if (operatorText === '*') leftSide = (lookup) => leftOperand(lookup) * rightOperand(lookup);
+        else if (operatorText === '/') leftSide = (lookup) => leftOperand(lookup) / rightOperand(lookup);
+        else leftSide = (lookup) => leftOperand(lookup) % rightOperand(lookup);
+      }
+      return leftSide;
+    }
+
+    function parseUnary() {
+      if (isSymbol('-')) { tokenIndex++; const operand = parseUnary(); return (lookup) => -operand(lookup); }
+      if (isSymbol('+')) { tokenIndex++; return parseUnary(); }
+      return parsePower();
+    }
+
+    function parsePower() {
+      const base = parsePrimary();
+      if (isSymbol('^')) {
+        tokenIndex++;
+        const exponent = parseUnary();
+        return (lookup) => Math.pow(base(lookup), exponent(lookup));
+      }
+      return base;
+    }
+
+    function parsePrimary() {
+      const token = peekToken();
+      if (!token) throw new Error('unexpected end');
+      if (token.kind === 'number') { tokenIndex++; const numberValue = token.value; return () => numberValue; }
+      if (token.kind === 'name') {
+        tokenIndex++;
+        const name = token.value;
+        if (isSymbol('(')) {
+          const mathFunction = expressionFunctions[name.toLowerCase()];
+          if (!mathFunction) throw new Error('unknown function ' + name);
+          tokenIndex++;
+          const argumentParsers = [];
+          if (!isSymbol(')')) {
+            argumentParsers.push(parseSum());
+            while (isSymbol(',')) { tokenIndex++; argumentParsers.push(parseSum()); }
+          }
+          expectSymbol(')');
+          return (lookup) => mathFunction(...argumentParsers.map((argumentParser) => argumentParser(lookup)));
+        }
+        return (lookup) => {
+          const variableValue = lookup(name);
+          if (typeof variableValue === 'number') return variableValue;
+          const constantValue = expressionConstants[name.toLowerCase()];
+          return constantValue === undefined ? NaN : constantValue;
+        };
+      }
+      if (token.value === '(') {
+        tokenIndex++;
+        const innerExpression = parseSum();
+        expectSymbol(')');
+        return innerExpression;
+      }
+      throw new Error('unexpected ' + token.value);
+    }
+
+    const parsedExpression = parseSum();
+    if (tokenIndex !== expressionTokens.length) throw new Error('unexpected ' + peekToken().value);
+    return parsedExpression;
+  }
+
+  /** A number, or an expression string evaluated with the current variables
+      (plus `extraVariables`, e.g. { x } while plotting). NaN if invalid. */
+  function evaluateNumber(numberOrExpression, extraVariables) {
+    if (typeof numberOrExpression === 'number') return numberOrExpression;
+    if (typeof numberOrExpression !== 'string') return NaN;
+    const expressionSource = numberOrExpression.trim();
+    if (!compiledExpressionsBySource.has(expressionSource)) {
+      let compiledExpression = null;
+      try { compiledExpression = parseExpression(expressionSource); } catch (parseError) { compiledExpression = null; }
+      compiledExpressionsBySource.set(expressionSource, compiledExpression);
+    }
+    const compiledExpression = compiledExpressionsBySource.get(expressionSource);
+    if (!compiledExpression) return NaN;
+    const variableLookup = (name) =>
+      (extraVariables && typeof extraVariables[name] === 'number') ? extraVariables[name] : explainerState.variables[name];
+    try { return Number(compiledExpression(variableLookup)); } catch (evaluationError) { return NaN; }
+  }
+
+  /** 0.1 → "0.1", 1234.5 → "1,235", 0.000123 → "0.000123". */
+  function formatLiveNumber(numberValue) {
+    if (!Number.isFinite(numberValue)) return numberValue > 0 ? '∞' : numberValue < 0 ? '−∞' : '?';
+    if (Math.abs(numberValue) >= 100) return Math.round(numberValue).toLocaleString('en-US');
+    return String(Number(numberValue.toPrecision(3)));
+  }
+
+  /** Replaces each [[expression]] with its current value. */
+  function fillLiveValues(templateText) {
+    return String(templateText).replace(/\[\[([^\]]{1,200})\]\]/g, (wholeMatch, expressionSource) => formatLiveNumber(evaluateNumber(expressionSource)));
+  }
+
+  function containsLiveValues(templateText) {
+    return typeof templateText === 'string' && templateText.includes('[[');
+  }
+
+  // ─── Equations (KaTeX) ──────────────────────────────────────────────────
+
+  /** Typesets LaTeX into the element; falls back to the raw text. Only
+      KaTeX's safe subset runs ("trust" stays off, so no links or HTML). */
+  function renderMath(targetElement, latexSource, isDisplayMode) {
+    try {
+      if (!window.katex) throw new Error('KaTeX missing');
+      window.katex.render(String(latexSource), targetElement, { displayMode: isDisplayMode, throwOnError: false, trust: false });
+    } catch (mathError) {
+      targetElement.textContent = String(latexSource);
+    }
+  }
+
   // ─── Building objects ───────────────────────────────────────────────────
 
   function makeGeometry(objectDescription) {
@@ -252,7 +450,9 @@
       }
       case 'line': {
         // Straight segments (no smoothing), so graph data and axes stay exact.
-        const linePoints = asArray(objectDescription.points).map((point) => vectorFrom(point, new THREE.Vector3()));
+        const linePoints = objectDescription.plot
+          ? computePlotPoints(objectDescription.plot)
+          : asArray(objectDescription.points).map((point) => vectorFrom(point, new THREE.Vector3()));
         if (linePoints.length < 2) return new THREE.CylinderGeometry(0.02, 0.02, 0.01, 6);
         const linePath = new THREE.CurvePath();
         for (let pointIndex = 1; pointIndex < linePoints.length; pointIndex++) {
@@ -341,20 +541,212 @@
       cardElement.style.width = (Number(objectDescription.width) || 220) + 'px';
     }
     if (objectDescription.color) cardElement.style.setProperty('--card-accent', objectDescription.color);
-    if (objectDescription.title) {
-      const cardTitleElement = document.createElement('div');
-      cardTitleElement.className = 'scene-card-title';
-      cardTitleElement.textContent = String(objectDescription.title);
-      cardElement.appendChild(cardTitleElement);
-    }
-    if (objectDescription.text) {
-      const cardBodyElement = document.createElement('div');
-      cardBodyElement.className = 'scene-card-body';
-      cardBodyElement.textContent = String(objectDescription.text);
-      cardElement.appendChild(cardBodyElement);
-    }
     labelLayerElement.appendChild(cardElement);
     return cardElement;
+  }
+
+  /** Fills a card with its title, equation, and text (live values filled in). */
+  function renderCardContent(objectRecord) {
+    const cardContent = objectRecord.cardContent;
+    const cardContentElement = document.createElement('div');
+    cardContentElement.className = 'scene-card-content';
+    if (cardContent.title) {
+      const cardTitleElement = document.createElement('div');
+      cardTitleElement.className = 'scene-card-title';
+      cardTitleElement.textContent = fillLiveValues(cardContent.title);
+      cardContentElement.appendChild(cardTitleElement);
+    }
+    if (cardContent.math) {
+      const cardMathElement = document.createElement('div');
+      cardMathElement.className = 'scene-card-math';
+      renderMath(cardMathElement, fillLiveValues(cardContent.math), true);
+      cardContentElement.appendChild(cardMathElement);
+    }
+    if (cardContent.text) {
+      const cardBodyElement = document.createElement('div');
+      cardBodyElement.className = 'scene-card-body';
+      cardBodyElement.textContent = fillLiveValues(cardContent.text);
+      cardContentElement.appendChild(cardBodyElement);
+    }
+    objectRecord.cardElement.replaceChildren(cardContentElement);
+  }
+
+  function cardContentHasLiveValues(cardContent) {
+    return containsLiveValues(cardContent.title) || containsLiveValues(cardContent.text) || containsLiveValues(cardContent.math);
+  }
+
+  // ─── Plots and live bindings ────────────────────────────────────────────
+
+  /** Points for a line's "plot": y = f(x) sampled over [from, to], or the
+      path of repeatedly applying "next" to x (like gradient descent steps).
+      Graph units map to the scene through origin + x * unit. */
+  function computePlotPoints(plotDescription) {
+    const plotOrigin = asArray(plotDescription.origin);
+    const plotUnit = asArray(plotDescription.unit);
+    const originX = Number(plotOrigin[0]) || 0;
+    const originY = Number(plotOrigin[1]) || 0;
+    const unitX = Number(plotUnit[0]) || 1;
+    const unitY = Number(plotUnit[1] ?? plotUnit[0]) || 1;
+    // Clamp far-off values (a diverging run) so geometry stays sane.
+    const clampToScene = (sceneCoordinate) => Math.max(-60, Math.min(60, sceneCoordinate));
+    const plotPoints = [];
+    const addGraphPoint = (graphX, graphY) => {
+      if (Number.isFinite(graphX) && Number.isFinite(graphY)) {
+        plotPoints.push(new THREE.Vector3(clampToScene(originX + graphX * unitX), clampToScene(originY + graphY * unitY), 0));
+      }
+    };
+
+    if (plotDescription.iterate && typeof plotDescription.iterate === 'object') {
+      const iterateDescription = plotDescription.iterate;
+      const iterationCount = Math.max(1, Math.min(200, Math.round(evaluateNumber(iterateDescription.count ?? 10)) || 10));
+      let currentX = evaluateNumber(iterateDescription.start ?? 0);
+      for (let iterationIndex = 0; iterationIndex <= iterationCount && Number.isFinite(currentX); iterationIndex++) {
+        addGraphPoint(currentX, evaluateNumber(plotDescription.y ?? 'x', { x: currentX }));
+        currentX = evaluateNumber(iterateDescription.next, { x: currentX });
+        if (Math.abs(currentX) > 1e6) break;
+      }
+      return plotPoints;
+    }
+
+    const fromX = evaluateNumber(plotDescription.from ?? -5);
+    const toX = evaluateNumber(plotDescription.to ?? 5);
+    if (!Number.isFinite(fromX) || !Number.isFinite(toX)) return plotPoints;
+    const sampleCount = Math.max(2, Math.min(400, Math.round(Number(plotDescription.samples)) || 80));
+    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+      const graphX = fromX + (toX - fromX) * sampleIndex / (sampleCount - 1);
+      addGraphPoint(graphX, evaluateNumber(plotDescription.y, { x: graphX }));
+    }
+    return plotPoints;
+  }
+
+  /** Rebuilds a plotted line (and its point markers) from the current variables. */
+  function rebuildPlot(objectRecord) {
+    const objectDescription = objectRecord.description;
+    const oldGeometry = objectRecord.mesh.geometry;
+    objectRecord.mesh.geometry = makeGeometry(objectDescription);
+    if (oldGeometry) oldGeometry.dispose();
+
+    for (const markerMesh of objectRecord.plotMarkerMeshes) {
+      objectRecord.mesh.remove(markerMesh);
+      markerMesh.geometry.dispose();
+    }
+    objectRecord.plotMarkerMeshes = [];
+    const markerRadius = Number(objectDescription.plot.markers) || 0;
+    if (markerRadius <= 0) return;
+    for (const plotPoint of computePlotPoints(objectDescription.plot)) {
+      const markerGeometry = explainerState.isTwoDimensional
+        ? new THREE.CircleGeometry(markerRadius, 24)
+        : new THREE.SphereGeometry(markerRadius, 20, 14);
+      // Shares the line's material, so markers fade and highlight with it.
+      const markerMesh = new THREE.Mesh(markerGeometry, objectRecord.material);
+      markerMesh.position.copy(plotPoint);
+      markerMesh.position.z += 0.01;
+      objectRecord.mesh.add(markerMesh);
+      objectRecord.plotMarkerMeshes.push(markerMesh);
+    }
+  }
+
+  /** Re-applies every expression after a slider moves (and after resets). */
+  function applyVariableBindings() {
+    for (const objectRecord of explainerState.objectRecordsById.values()) {
+      const objectDescription = objectRecord.description;
+      const bindings = objectDescription.bind;
+      if (bindings && typeof bindings === 'object') {
+        if (Array.isArray(bindings.position)) {
+          for (let axisIndex = 0; axisIndex < 3; axisIndex++) {
+            if (bindings.position[axisIndex] === undefined || bindings.position[axisIndex] === null) continue;
+            const axisValue = evaluateNumber(bindings.position[axisIndex]);
+            if (Number.isFinite(axisValue)) objectRecord.mesh.position.setComponent(axisIndex, Math.max(-100, Math.min(100, axisValue)));
+          }
+        }
+        if (bindings.scale !== undefined) {
+          const scaleExpressions = asArray(bindings.scale);
+          const scaleValues = [0, 1, 2].map((axisIndex) => evaluateNumber(scaleExpressions[axisIndex] ?? scaleExpressions[0]));
+          if (scaleValues.every(Number.isFinite)) {
+            objectRecord.mesh.scale.set(...scaleValues.map((scaleValue) => Math.max(0.0001, Math.min(100, scaleValue))));
+          }
+        }
+        if (bindings.opacity !== undefined) {
+          const opacityValue = evaluateNumber(bindings.opacity);
+          if (Number.isFinite(opacityValue)) objectRecord.baseOpacity = Math.max(0, Math.min(1, opacityValue));
+        }
+      }
+      if (objectDescription.plot && objectRecord.material) rebuildPlot(objectRecord);
+      if (objectRecord.cardElement && cardContentHasLiveValues(objectRecord.cardContent)) renderCardContent(objectRecord);
+    }
+    for (const labelRecord of explainerState.labelRecordsByKey.values()) {
+      if (containsLiveValues(labelRecord.labelText) || containsLiveValues(labelRecord.labelMath)) renderLabelContent(labelRecord);
+    }
+    refreshObjectTargetOpacities();
+  }
+
+  // ─── Live sliders ───────────────────────────────────────────────────────
+
+  const sliderPanelElement = document.getElementById('slider-panel');
+  // Dragging a slider shouldn't also pan or rotate the scene.
+  sliderPanelElement.addEventListener('pointerdown', (pointerEvent) => pointerEvent.stopPropagation());
+  sliderPanelElement.addEventListener('wheel', (wheelEvent) => wheelEvent.stopPropagation());
+
+  function showSlider(sliderAction) {
+    const variableName = String(sliderAction.id ?? sliderAction.variable ?? '');
+    if (!/^[A-Za-z_][A-Za-z_0-9]{0,30}$/.test(variableName)) return;
+    let minimumValue = Number(sliderAction.min);
+    let maximumValue = Number(sliderAction.max);
+    if (!Number.isFinite(minimumValue)) minimumValue = 0;
+    if (!Number.isFinite(maximumValue) || maximumValue <= minimumValue) maximumValue = minimumValue + 1;
+    const stepSize = Number(sliderAction.step) > 0 ? Number(sliderAction.step) : (maximumValue - minimumValue) / 100;
+    const requestedValue = Number(sliderAction.value);
+    const startingValue = Number.isFinite(requestedValue)
+      ? requestedValue
+      : (typeof explainerState.variables[variableName] === 'number' ? explainerState.variables[variableName] : minimumValue);
+    explainerState.variables[variableName] = Math.max(minimumValue, Math.min(maximumValue, startingValue));
+
+    if (!sliderPanelElement.querySelector('.slider-hint')) {
+      const sliderHintElement = document.createElement('div');
+      sliderHintElement.className = 'slider-hint';
+      sliderHintElement.textContent = 'Try it: drag to change';
+      sliderPanelElement.appendChild(sliderHintElement);
+    }
+    let sliderRowElement = sliderPanelElement.querySelector('[data-variable="' + variableName + '"]');
+    if (!sliderRowElement) {
+      sliderRowElement = document.createElement('div');
+      sliderRowElement.className = 'slider-row';
+      sliderRowElement.dataset.variable = variableName;
+      sliderRowElement.innerHTML = '<div class="slider-row-header"><span class="slider-name"></span><span class="slider-value"></span></div><input type="range">';
+      sliderPanelElement.appendChild(sliderRowElement);
+      const sliderInput = sliderRowElement.querySelector('input');
+      sliderInput.addEventListener('input', () => {
+        explainerState.variables[variableName] = Number(sliderInput.value);
+        sliderRowElement.querySelector('.slider-value').textContent = formatLiveNumber(Number(sliderInput.value));
+        applyVariableBindings();
+      });
+    }
+    sliderRowElement.querySelector('.slider-name').textContent = String(sliderAction.label || variableName);
+    const sliderInput = sliderRowElement.querySelector('input');
+    sliderInput.min = String(minimumValue);
+    sliderInput.max = String(maximumValue);
+    sliderInput.step = String(stepSize);
+    sliderInput.value = String(explainerState.variables[variableName]);
+    sliderRowElement.querySelector('.slider-value').textContent = formatLiveNumber(explainerState.variables[variableName]);
+    sliderPanelElement.hidden = false;
+  }
+
+  function hideSliders() {
+    sliderPanelElement.hidden = true;
+    sliderPanelElement.replaceChildren();
+  }
+
+  /** Back to the scene's starting values ("variables" in the setup). */
+  function resetVariables() {
+    explainerState.variables = Object.create(null);
+    const startingVariables = explainerState.sceneDescription && explainerState.sceneDescription.variables;
+    if (startingVariables && typeof startingVariables === 'object') {
+      for (const [variableName, startingValue] of Object.entries(startingVariables)) {
+        if (/^[A-Za-z_][A-Za-z_0-9]{0,30}$/.test(variableName) && Number.isFinite(Number(startingValue))) {
+          explainerState.variables[variableName] = Number(startingValue);
+        }
+      }
+    }
   }
 
   function buildSceneObject(objectDescription, isAddedByStep) {
@@ -400,6 +792,9 @@
       mesh,
       material: isCard ? null : material,
       cardElement: isCard ? makeCardElement(objectDescription) : null,
+      /** A card's title, equation, and text; "update" changes them. */
+      cardContent: isCard ? initialCardContent(objectDescription) : null,
+      plotMarkerMeshes: [],
       isAddedByStep: Boolean(isAddedByStep),
       initialColor: new THREE.Color(objectDescription.color || '#8fa3c7'),
       currentBaseColor: new THREE.Color(objectDescription.color || '#8fa3c7'),
@@ -427,16 +822,23 @@
     if (!isCard) {
       material.opacity = objectRecord.currentOpacity;
       if (initialDrawProgress < 1) mesh.geometry.setDrawRange(0, 0);
+      if (objectDescription.plot && Number(objectDescription.plot.markers) > 0) rebuildPlot(objectRecord);
     } else {
       material.dispose();
+      renderCardContent(objectRecord);
     }
     mesh.visible = objectRecord.currentOpacity > 0.01;
     explainerState.sceneObjectsGroup.add(mesh);
     explainerState.objectRecordsById.set(objectRecord.id, objectRecord);
   }
 
+  function initialCardContent(objectDescription) {
+    return { title: objectDescription.title, text: objectDescription.text, math: objectDescription.math };
+  }
+
   function disposeSceneObject(objectRecord) {
     clearHighlight(objectRecord);
+    objectRecord.plotMarkerMeshes.forEach((markerMesh) => markerMesh.geometry.dispose());
     explainerState.sceneObjectsGroup.remove(objectRecord.mesh);
     if (objectRecord.mesh.geometry) objectRecord.mesh.geometry.dispose();
     if (objectRecord.material) objectRecord.material.dispose();
@@ -460,7 +862,13 @@
 
   // ─── Labels ─────────────────────────────────────────────────────────────
 
-  function showLabel(labelKey, labelText, anchorObjectId, anchorPosition, offset) {
+  function renderLabelContent(labelRecord) {
+    const labelTextElement = labelRecord.element.querySelector('.scene-label-text');
+    if (labelRecord.labelMath) renderMath(labelTextElement, fillLiveValues(labelRecord.labelMath), false);
+    else labelTextElement.textContent = fillLiveValues(labelRecord.labelText);
+  }
+
+  function showLabel(labelKey, labelText, anchorObjectId, anchorPosition, offset, labelMath) {
     let labelRecord = explainerState.labelRecordsByKey.get(labelKey);
     if (!labelRecord) {
       const labelElement = document.createElement('div');
@@ -470,7 +878,9 @@
       labelRecord = { element: labelElement };
       explainerState.labelRecordsByKey.set(labelKey, labelRecord);
     }
-    labelRecord.element.querySelector('.scene-label-text').textContent = String(labelText);
+    labelRecord.labelText = String(labelText);
+    labelRecord.labelMath = labelMath ? String(labelMath) : null;
+    renderLabelContent(labelRecord);
     labelRecord.anchorObjectId = anchorObjectId;
     labelRecord.anchorPosition = anchorPosition;
     labelRecord.offset = offset;
@@ -981,10 +1391,10 @@
         break;
       case 'label':
         if (action.position) {
-          showLabel('position-' + JSON.stringify(action.position), action.text || '', null, vectorFrom(action.position, new THREE.Vector3()), null);
+          showLabel('position-' + JSON.stringify(action.position), action.text || '', null, vectorFrom(action.position, new THREE.Vector3()), null, action.math);
         } else {
           targetIds.forEach((targetId) => {
-            showLabel(targetId, action.text || targetId, targetId, null, action.offset ? vectorFrom(action.offset, new THREE.Vector3()) : null);
+            showLabel(targetId, action.text || targetId, targetId, null, action.offset ? vectorFrom(action.offset, new THREE.Vector3()) : null, action.math);
           });
         }
         break;
@@ -1045,6 +1455,28 @@
         asArray(action.objects ?? action.object).forEach((objectDescription) => {
           if (objectDescription && typeof objectDescription === 'object') buildSceneObject(objectDescription, true);
         });
+        applyVariableBindings();
+        break;
+      case 'update':
+        targetRecords.filter((objectRecord) => objectRecord.cardElement).forEach((objectRecord) => {
+          for (const contentField of ['title', 'text', 'math']) {
+            if (action[contentField] !== undefined) objectRecord.cardContent[contentField] = action[contentField] || undefined;
+          }
+          renderCardContent(objectRecord);
+          if (!isInstant) {
+            // Restart the change animation (removing and re-adding the class).
+            objectRecord.cardElement.classList.remove('is-updating');
+            void objectRecord.cardElement.offsetWidth;
+            objectRecord.cardElement.classList.add('is-updating');
+          }
+        });
+        break;
+      case 'slider':
+        showSlider(action);
+        applyVariableBindings();
+        break;
+      case 'hidesliders':
+        hideSliders();
         break;
       case 'camera':
         moveCamera(action, isInstant);
@@ -1073,8 +1505,11 @@
 
   /** Back to how the scene looked before step 1, with nothing animating. */
   function resetSceneToInitialState() {
+    explainerState.pendingDelayedActions = [];
     removeAllEffects();
     removeAllLabels();
+    hideSliders();
+    resetVariables();
     explainerState.focusedObjectIds = null;
     for (const objectRecord of [...explainerState.objectRecordsById.values()]) {
       if (objectRecord.isAddedByStep) {
@@ -1093,8 +1528,12 @@
       objectRecord.moveTween = null;
       objectRecord.drawProgress = objectRecord.initialDrawProgress;
       objectRecord.drawTargetProgress = objectRecord.initialDrawProgress;
+      if (objectRecord.cardElement) {
+        objectRecord.cardContent = initialCardContent(objectRecord.description);
+        renderCardContent(objectRecord);
+      }
     }
-    refreshObjectTargetOpacities();
+    applyVariableBindings();
     for (const objectRecord of explainerState.objectRecordsById.values()) {
       objectRecord.currentOpacity = objectRecord.targetOpacity;
     }
@@ -1122,8 +1561,36 @@
   function estimatedStepSeconds(step) {
     if (step.seconds) return Math.max(2, Number(step.seconds));
     const wordCount = String(step.narration || '').split(/\s+/).filter(Boolean).length;
+    // Leave time for the step's last delayed action to play out.
+    const lastDelayedActionSeconds = Math.max(0, ...asArray(step.actions).map((action) =>
+      (Number(action && action.delay) || 0) + (Number(action && action.seconds) || 0)));
     // About 2.6 spoken words per second, plus a beat to look at the visual.
-    return Math.max(3.5, Math.min(16, wordCount / 2.6 + 1.5));
+    return Math.max(3.5, Math.min(20, Math.max(wordCount / 2.6, lastDelayedActionSeconds) + 1.5));
+  }
+
+  /** Actions with "delay" wait (scene time, paused with playback) before running. */
+  function applyOrDelayAction(action) {
+    const delaySeconds = Math.min(30, Number(action && action.delay) || 0);
+    if (delaySeconds > 0) explainerState.pendingDelayedActions.push({ action, remainingSeconds: delaySeconds });
+    else applyAction(action, false);
+  }
+
+  /** Runs the actions still waiting, right away (moving on or finishing). */
+  function finishDelayedActionsNow() {
+    const waitingActions = explainerState.pendingDelayedActions;
+    explainerState.pendingDelayedActions = [];
+    waitingActions.forEach((waitingAction) => applyAction(waitingAction.action, true));
+  }
+
+  function advanceDelayedActions(deltaSeconds) {
+    if (!explainerState.pendingDelayedActions.length || !explainerState.isPlaying) return;
+    const dueActions = [];
+    explainerState.pendingDelayedActions = explainerState.pendingDelayedActions.filter((waitingAction) => {
+      waitingAction.remainingSeconds -= deltaSeconds;
+      if (waitingAction.remainingSeconds <= 0) { dueActions.push(waitingAction.action); return false; }
+      return true;
+    });
+    dueActions.forEach((dueAction) => applyAction(dueAction, false));
   }
 
   function goToStep(requestedStepIndex) {
@@ -1134,7 +1601,9 @@
 
     // Going back or jumping ahead rebuilds the state of every earlier step
     // instantly, so each step always looks the same however you got there.
-    if (!isNextStepInOrder) {
+    if (isNextStepInOrder) {
+      finishDelayedActionsNow();
+    } else {
       resetSceneToInitialState();
       for (let earlierStepIndex = 0; earlierStepIndex < stepIndex; earlierStepIndex++) {
         asArray(steps[earlierStepIndex].actions).forEach((action) => applyAction(action, true));
@@ -1145,7 +1614,7 @@
     }
 
     explainerState.currentStepIndex = stepIndex;
-    asArray(steps[stepIndex].actions).forEach((action) => applyAction(action, false));
+    asArray(steps[stepIndex].actions).forEach(applyOrDelayAction);
     showCaption(steps[stepIndex].narration || '');
     refreshStepControls();
     postToNative({ type: 'stepStarted', index: stepIndex, narration: steps[stepIndex].narration || '' });
@@ -1168,10 +1637,11 @@
       // The next step hasn't arrived yet; appendSteps continues playback.
       explainerState.isWaitingForNextStep = true;
     } else {
+      finishDelayedActionsNow();
       explainerState.isPlaying = false;
       refreshStepControls();
       postToNative({ type: 'finished' });
-      showQuiz();
+      offerQuizAtEnd();
     }
   }
 
@@ -1233,6 +1703,8 @@
   closeButton.addEventListener('click', () => postToNative({ type: 'close' }));
 
   window.addEventListener('keydown', (keyEvent) => {
+    // Arrow keys on a focused slider move the slider, not the steps.
+    if (keyEvent.target && keyEvent.target.tagName === 'INPUT' && keyEvent.key !== 'Escape') return;
     if (keyEvent.key === 'Escape') postToNative({ type: 'close' });
     else if (keyEvent.key === ' ') { keyEvent.preventDefault(); playPauseButton.click(); }
     else if (keyEvent.key === 'ArrowRight') nextButton.click();
@@ -1256,7 +1728,18 @@
     quizButton.hidden = explainerState.quizQuestions.length === 0;
   }
 
+  /** At the end: open the quiz, unless sliders are out (the user is still
+      playing with them), then the Quiz button glows instead. */
+  function offerQuizAtEnd() {
+    if (!sliderPanelElement.hidden) {
+      quizButton.classList.add('is-attention');
+      return;
+    }
+    showQuiz();
+  }
+
   function showQuiz() {
+    quizButton.classList.remove('is-attention');
     if (!explainerState.quizQuestions || !explainerState.quizQuestions.length) return;
     libraryPanel.hidden = true;
     quizPanel.hidden = false;
@@ -1541,8 +2024,15 @@
     const isFocused = explainerState.focusedObjectIds && explainerState.focusedObjectIds.has(objectRecord.id);
     cardElement.classList.toggle('is-highlighted', Boolean(objectRecord.highlightColor || isFocused));
     projectedCardPosition.copy(objectRecord.mesh.getWorldPosition(new THREE.Vector3())).project(activeCamera);
-    cardElement.style.left = ((projectedCardPosition.x + 1) / 2 * stageElement.clientWidth) + 'px';
-    cardElement.style.top = ((1 - projectedCardPosition.y) / 2 * stageElement.clientHeight) + 'px';
+    // Centered on its anchor, but kept fully inside the stage (wide equations).
+    const stageWidth = stageElement.clientWidth;
+    const stageHeight = stageElement.clientHeight;
+    const cardHalfWidth = Math.min(stageWidth / 2, cardElement.offsetWidth / 2);
+    const cardHalfHeight = Math.min(stageHeight / 2, cardElement.offsetHeight / 2);
+    const cardCenterX = (projectedCardPosition.x + 1) / 2 * stageWidth;
+    const cardCenterY = (1 - projectedCardPosition.y) / 2 * stageHeight;
+    cardElement.style.left = Math.max(cardHalfWidth + 6, Math.min(stageWidth - cardHalfWidth - 6, cardCenterX)) + 'px';
+    cardElement.style.top = Math.max(cardHalfHeight + 6, Math.min(stageHeight - cardHalfHeight - 6, cardCenterY)) + 'px';
   }
 
   function resizeRendererToStage() {
@@ -1575,6 +2065,7 @@
   /** Moves every animation forward by `deltaSeconds` and draws one frame. */
   function advanceAndRender(deltaSeconds) {
     elapsedSceneSeconds += deltaSeconds;
+    advanceDelayedActions(deltaSeconds);
 
     for (const objectRecord of explainerState.objectRecordsById.values()) {
       // Ease opacity toward its target for smooth show/hide/focus.
@@ -1596,6 +2087,11 @@
       }
       const indexCount = objectRecord.mesh.geometry.index ? objectRecord.mesh.geometry.index.count : Infinity;
       objectRecord.mesh.geometry.setDrawRange(0, objectRecord.drawProgress >= 1 ? Infinity : Math.floor(indexCount * objectRecord.drawProgress / 3) * 3);
+      // Plot markers appear as the line is traced past them.
+      const markerCount = objectRecord.plotMarkerMeshes.length;
+      objectRecord.plotMarkerMeshes.forEach((markerMesh, markerIndex) => {
+        markerMesh.visible = markerCount < 2 || markerIndex / (markerCount - 1) <= objectRecord.drawProgress + 0.001;
+      });
 
       if (!objectRecord.material.emissive) {
         // Flat 2D materials have no glow, so highlights tint the color instead.
@@ -1658,6 +2154,9 @@
       explainerState.autoAdvance = loadOptions.autoAdvance !== false;
       explainerState.isPlaying = true;
       explainerState.currentStepIndex = -1;
+      explainerState.pendingDelayedActions = [];
+      hideSliders();
+      resetVariables();
 
       sceneTitleElement.textContent = explainerState.sceneDescription.title || 'heySona';
       loadingMessageElement.style.display = 'none';
@@ -1677,7 +2176,7 @@
       }
 
       resizeRendererToStage();
-      refreshObjectTargetOpacities();
+      applyVariableBindings();
       applyInitialCamera(true);
       captionElement.textContent = '';
       refreshStepControls();
@@ -1713,9 +2212,10 @@
     /** Voice-driven playback calls this after the last step's narration,
         so the play button turns into "replay". */
     markFinished() {
+      finishDelayedActionsNow();
       explainerState.isPlaying = false;
       refreshStepControls();
-      showQuiz();
+      offerQuizAtEnd();
     },
     setQuiz,
     showQuiz,
