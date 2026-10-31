@@ -57,6 +57,9 @@ enum ClaudeModelCatalog {
 
     static let defaultModelOption = opus
 
+    /// Saved model choice meaning "pick a model per question" (ClaudeModelRouting.swift).
+    static let autoModelChoiceID = "auto"
+
     /// How much the model thinks before answering. heySona's replies are
     /// short and spoken, so time to first word matters most; "low" keeps
     /// thinking brief while the current models still read screenshots well.
@@ -74,7 +77,7 @@ enum ClaudeModelCatalog {
     /// (Sonnet 4.6, Opus 4.6) move to the same family's current model, and
     /// anything unknown falls back to the default.
     static func modelOption(forSavedModelID savedModelID: String?) -> ClaudeModelOption {
-        guard let savedModelID else { return defaultModelOption }
+        guard let savedModelID, savedModelID != autoModelChoiceID else { return defaultModelOption }
 
         if let currentModelOption = allModelOptions.first(where: { $0.modelID == savedModelID }) {
             return currentModelOption

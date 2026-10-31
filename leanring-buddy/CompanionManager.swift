@@ -74,9 +74,16 @@ final class CompanionManager: ObservableObject {
     /// ElevenLabs voice used until the user picks a different one in Settings.
     static let defaultElevenLabsVoiceId = "kPzsL2i3teMYv0FxEYQ6"
 
+    /// The main Claude connection: the chosen model, or Opus in Auto mode
+    /// (visual explanation scenes and the visual self-check use it).
     lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(model: selectedModel)
+        return ClaudeAPI(model: ClaudeModelCatalog.modelOption(forSavedModelID: selectedModel).modelID)
     }()
+    /// Auto mode: one connection per routed model, so replies and explanation
+    /// scenes can use different models at the same time.
+    var claudeAPIsByRoutedModelID: [String: ClaudeAPI] = [:]
+    /// Auto mode: which model answered the last question and why, for Settings.
+    @Published var lastAutoModelRoutingSummary: String?
 
     lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         let ttsClient = ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
@@ -201,14 +208,18 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     /// Older saved choices (Sonnet 4.6, Opus 4.6) map to the current model in
     /// the same family; see ClaudeModelCatalog.
-    @Published var selectedModel: String = ClaudeModelCatalog
-        .modelOption(forSavedModelID: UserDefaults.standard.string(forKey: "selectedClaudeModel"))
-        .modelID
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") == ClaudeModelCatalog.autoModelChoiceID
+        ? ClaudeModelCatalog.autoModelChoiceID
+        : ClaudeModelCatalog.modelOption(forSavedModelID: UserDefaults.standard.string(forKey: "selectedClaudeModel")).modelID
 
+    /// `model` is a model ID or `ClaudeModelCatalog.autoModelChoiceID`.
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        claudeAPI.model = ClaudeModelCatalog.modelOption(forSavedModelID: model).modelID
+        if model != ClaudeModelCatalog.autoModelChoiceID {
+            lastAutoModelRoutingSummary = nil
+        }
     }
 
     /// The ElevenLabs voice used for spoken replies. Persisted to UserDefaults.
@@ -745,9 +756,12 @@ final class CompanionManager: ObservableObject {
             do {
                 // Capture all connected screens so the AI has full context.
                 // The cursor's screen is sent as sharp as the model can read.
-                let selectedModelOption = ClaudeModelCatalog.modelOption(forModelID: selectedModel) ?? ClaudeModelCatalog.defaultModelOption
+                // Auto mode picks the model first: screenshot size depends on it.
+                let responseModelOption = await responseModelOption(for: transcript)
+                guard !Task.isCancelled else { return }
+                let responseClaudeAPI = claudeAPI(for: responseModelOption)
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
-                    cursorScreenMaximumLongEdgeInPixels: selectedModelOption.screenshotMaximumLongEdgeInPixels,
+                    cursorScreenMaximumLongEdgeInPixels: responseModelOption.screenshotMaximumLongEdgeInPixels,
                     otherScreensMaximumLongEdgeInPixels: ClaudeModelCatalog.otherScreensMaximumLongEdgeInPixels
                 )
 
@@ -804,7 +818,7 @@ final class CompanionManager: ObservableObject {
 
                 let fullResponseText: String
                 do {
-                    let streamingResult = try await claudeAPI.analyzeImageStreaming(
+                    let streamingResult = try await responseClaudeAPI.analyzeImageStreaming(
                         images: labeledImages,
                         systemPrompt: requestSetup.systemPrompt,
                         conversationHistory: historyForAPI,

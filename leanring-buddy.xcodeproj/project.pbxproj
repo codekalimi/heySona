@@ -8,25 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		AA00BB062F6500060039DA55 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB052F6500050039DA55 /* WhisperKit */; };
-		AA00BB0F2F65000F0039DA55 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB0E2F65000E0039DA55 /* MLXUtilsLibrary */; };
-		AA00BB0C2F65000C0039DA55 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB0B2F65000B0039DA55 /* MLX */; };
 		AA00BB092F6500090039DA55 /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB082F6500080039DA55 /* KokoroSwift */; };
+		AA00BB0C2F65000C0039DA55 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB0B2F65000B0039DA55 /* MLX */; };
+		AA00BB0F2F65000F0039DA55 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB0E2F65000E0039DA55 /* MLXUtilsLibrary */; };
 		AA00BB102F6500100039DA55 /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB082F6500080039DA55 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		AA00BB112F6500110039DA55 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				AA00BB102F6500100039DA55 /* KokoroSwift in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXContainerItemProxy section */
 		28F22CCD2F56440300A0FC59 /* PBXContainerItemProxy */ = {
@@ -44,6 +30,20 @@
 			remoteInfo = "leanring-buddy";
 		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA00BB112F6500110039DA55 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AA00BB102F6500100039DA55 /* KokoroSwift in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		28F22CBF2F56440300A0FC59 /* heySona.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = heySona.app; sourceTree = BUILT_PRODUCTS_DIR; };

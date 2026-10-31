@@ -309,13 +309,32 @@ struct SettingsView: View {
             settingsSectionTitle("CLAUDE MODEL")
 
             settingsCard {
-                HStack(spacing: 8) {
-                    ForEach(ClaudeModelCatalog.allModelOptions) { modelOption in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
                         modelOptionButton(
-                            label: modelOption.pickerLabel,
-                            detail: modelOption.pickerDetail,
-                            modelID: modelOption.modelID
+                            label: "Auto",
+                            detail: "Picks per question",
+                            modelID: ClaudeModelCatalog.autoModelChoiceID
                         )
+                        ForEach(ClaudeModelCatalog.allModelOptions) { modelOption in
+                            modelOptionButton(
+                                label: modelOption.pickerLabel,
+                                detail: modelOption.pickerDetail,
+                                modelID: modelOption.modelID
+                            )
+                        }
+                    }
+
+                    if companionManager.selectedModel == ClaudeModelCatalog.autoModelChoiceID {
+                        Text("Haiku for plain questions, Sonnet for anything on your screen, Opus for deep explanations and visual explanations.")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let lastAutoModelRoutingSummary = companionManager.lastAutoModelRoutingSummary {
+                            Text("Last reply: \(lastAutoModelRoutingSummary)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(DS.Colors.textSecondary)
+                        }
                     }
                 }
             }
