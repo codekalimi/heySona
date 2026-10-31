@@ -90,37 +90,53 @@ final class MenuBarPanelManager: NSObject {
         button.target = self
     }
 
-    /// Draws the heySona triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
+    /// Draws the heySona mark as a menu bar icon: the pointer cursor with
+    /// two sound waves, matching the app icon (see
+    /// scripts/generate-brand-assets.swift). Drawn in black and marked as a
+    /// template image so macOS tints it for light and dark menu bars.
     private func makeHeySonaMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
 
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
+        // The mark is laid out pointing left (in the app icon's units,
+        // centered on the group's middle), then scaled, tilted 40° so the
+        // pointer faces up-left, and centered in the icon.
+        let markScale: CGFloat = 0.0235
+        let markTransform = NSAffineTransform()
+        markTransform.translateX(by: iconSize * 0.5, yBy: iconSize * 0.5)
+        markTransform.rotate(byDegrees: -40)
+        markTransform.scale(by: markScale)
+        markTransform.concat()
 
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
-
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
-        }
-
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
+        let pointerPath = NSBezierPath()
+        pointerPath.move(to: CGPoint(x: -355, y: 0))
+        pointerPath.line(to: CGPoint(x: -60, y: 140))
+        pointerPath.line(to: CGPoint(x: -60, y: -140))
+        pointerPath.close()
+        pointerPath.lineJoinStyle = .round
+        // A thin stroke with round joins softens the corners like the icon's.
+        pointerPath.lineWidth = 40
 
         NSColor.black.setFill()
-        path.fill()
+        NSColor.black.setStroke()
+        pointerPath.fill()
+        pointerPath.stroke()
+
+        let soundWaveArcCenter = CGPoint(x: -155, y: 0)
+        let soundWaveHalfAngleInDegrees: CGFloat = 36
+        for soundWaveRadius: CGFloat in [255, 385] {
+            let soundWavePath = NSBezierPath()
+            soundWavePath.appendArc(
+                withCenter: soundWaveArcCenter,
+                radius: soundWaveRadius,
+                startAngle: -soundWaveHalfAngleInDegrees,
+                endAngle: soundWaveHalfAngleInDegrees
+            )
+            soundWavePath.lineWidth = 72
+            soundWavePath.lineCapStyle = .round
+            soundWavePath.stroke()
+        }
 
         image.unlockFocus()
         return image

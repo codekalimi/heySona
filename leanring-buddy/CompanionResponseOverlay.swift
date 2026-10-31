@@ -52,14 +52,15 @@ final class CompanionResponseOverlayManager {
         resizePanelToFitContent()
     }
 
-    func finishStreaming() {
-        // Keep the response visible for a few seconds after streaming ends,
-        // then fade out so the user has time to read the last chunk.
+    /// Keeps the bubble visible for `afterDelayInSeconds`, then fades it out.
+    /// The default gives time to read a text-only reply; captions pass a
+    /// shorter delay because the reply was also heard.
+    func finishStreaming(afterDelayInSeconds: TimeInterval = 6) {
         let hideWork = DispatchWorkItem { [weak self] in
             self?.fadeOutAndHide()
         }
         autoHideWorkItem = hideWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: hideWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterDelayInSeconds, execute: hideWork)
     }
 
     func hideOverlay() {

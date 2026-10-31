@@ -16,6 +16,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 apiKeysSection
                 voiceSection
+                visualsSection
                 macActionsSection
                 LongTermMemorySettingsSection(
                     companionManager: companionManager,
@@ -79,6 +80,106 @@ struct SettingsView: View {
 
             ElevenLabsVoicePickerCard(companionManager: companionManager)
                 .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+        }
+    }
+
+    // MARK: - Visuals
+
+    private var visualsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsSectionTitle("VISUALS")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    settingsToggleRow(
+                        title: "Draw on screen",
+                        detail: "Circles, highlights, arrows, and underlines show you what heySona is talking about. They fade after the reply.",
+                        isOn: Binding(
+                            get: { companionManager.isScreenDrawingEnabled },
+                            set: { companionManager.setScreenDrawingEnabled($0) }
+                        )
+                    )
+
+                    settingsToggleRow(
+                        title: "Step-by-step guidance",
+                        detail: "For \"how do I…\" questions, the cursor moves to each step and numbers it as heySona says it.",
+                        isOn: Binding(
+                            get: { companionManager.isStepGuidanceEnabled },
+                            set: { companionManager.setStepGuidanceEnabled($0) }
+                        )
+                    )
+
+                    settingsToggleRow(
+                        title: "Guided mode",
+                        detail: "For longer tasks (like in Resolve, FL Studio, or Figma), heySona waits for your click after each step, then shows the next one. Esc stops it.",
+                        isOn: Binding(
+                            get: { companionManager.isGuidedModeEnabled },
+                            set: { companionManager.setGuidedModeEnabled($0) }
+                        )
+                    )
+                    .opacity(companionManager.isStepGuidanceEnabled ? 1 : 0.5)
+
+                    settingsToggleRow(
+                        title: "Visual explanations",
+                        detail: "Ask \"explain how a rocket engine works\" or \"show me how the heart pumps blood\" and heySona builds an animated 3D model or diagram and narrates it step by step.",
+                        isOn: Binding(
+                            get: { companionManager.isVisualExplanationEnabled },
+                            set: { companionManager.setVisualExplanationEnabled($0) }
+                        )
+                    )
+
+                    HStack {
+                        Text("Saved explanations replay anytime, free.")
+                            .font(.system(size: 11))
+                            .foregroundColor(DS.Colors.textTertiary)
+                        Spacer()
+                        SettingsCapsuleButton(
+                            title: "Open library",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showVisualExplanationLibrary() }
+                        )
+                        SettingsCapsuleButton(
+                            title: "Rocket demo",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showVisualExplainerDemo() }
+                        )
+                    }
+
+                    settingsToggleRow(
+                        title: "Show captions",
+                        detail: "Shows the spoken reply as text next to your cursor while heySona talks.",
+                        isOn: Binding(
+                            get: { companionManager.isLiveCaptionsEnabled },
+                            set: { companionManager.setLiveCaptionsEnabled($0) }
+                        )
+                    )
+                    .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+                }
+            }
+        }
+    }
+
+    private func settingsToggleRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .pointerCursor()
         }
     }
 

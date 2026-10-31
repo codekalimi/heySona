@@ -1,0 +1,386 @@
+<!doctype html>
+<!--
+  heySona visual explainer.
+  Hosted in a WKWebView by VisualExplainerPanelManager.swift (shipped in VisualExplainer.bundle). Renders a scene
+  description (shapes, labels, arrows, particle flows, camera moves) as an
+  animated, narrated, step-by-step explanation. Scene format and the
+  JavaScript API are documented at the top of visual-explainer.js.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>heySona Explainer</title>
+  <style>
+    :root {
+      --background: #101211;
+      --surface: #171918;
+      --border: #373b39;
+      --text-primary: #eceeed;
+      --text-secondary: #adb5b2;
+      --text-tertiary: #6b736f;
+      --accent: #3380ff;
+      --accent-soft: rgba(51, 128, 255, 0.16);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--background);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    #explainer {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    /* ---- Header ---- */
+    #header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px 10px;
+      border-bottom: 1px solid rgba(55, 59, 57, 0.6);
+    }
+
+    #scene-title {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #step-counter {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .header-button {
+      height: 26px;
+      padding: 0 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .header-button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+    #quiz-button { border-color: var(--accent); color: #ffffff; background: var(--accent-soft); }
+
+    /* ---- Quiz and library panels, floating over the stage ---- */
+    .stage-panel {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(520px, calc(100% - 40px));
+      max-height: calc(100% - 40px);
+      overflow-y: auto;
+      padding: 16px 18px;
+      border-radius: 14px;
+      background: rgba(23, 25, 24, 0.97);
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      cursor: default;
+      z-index: 5;
+    }
+    .stage-panel[hidden] { display: none; }
+    .stage-panel-header { display: flex; align-items: center; margin-bottom: 12px; }
+    .stage-panel-title { flex: 1; font-size: 14px; font-weight: 650; }
+    .panel-close-button {
+      width: 26px; height: 26px; border-radius: 50%;
+      border: none; background: rgba(255, 255, 255, 0.08);
+      color: var(--text-secondary); cursor: pointer;
+    }
+    .panel-close-button:hover { background: rgba(255, 255, 255, 0.14); color: var(--text-primary); }
+
+    .quiz-progress { font-size: 11px; color: var(--text-tertiary); margin-bottom: 6px; }
+    .quiz-question { font-size: 15px; line-height: 1.4; margin-bottom: 12px; }
+    .quiz-choice {
+      display: block; width: 100%; text-align: left;
+      margin-bottom: 8px; padding: 10px 12px;
+      border-radius: 10px; border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-primary); font-size: 13px; cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .quiz-choice:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+    .quiz-choice:disabled { cursor: default; }
+    .quiz-choice.is-correct { border-color: #4cd6a0; background: rgba(76, 214, 160, 0.14); }
+    .quiz-choice.is-wrong { border-color: #ff6b8b; background: rgba(255, 107, 139, 0.12); }
+    .quiz-feedback { font-size: 13px; line-height: 1.45; color: var(--text-secondary); margin: 6px 0 12px; }
+    .panel-primary-button {
+      height: 32px; padding: 0 16px; border-radius: 999px; border: none;
+      background: var(--accent); color: #ffffff; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .panel-primary-button:hover { background: #1d4ed8; }
+
+    .library-entry {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 4px; border-bottom: 1px solid rgba(55, 59, 57, 0.6);
+    }
+    .library-entry:last-child { border-bottom: none; }
+    .library-entry-text { flex: 1; min-width: 0; }
+    .library-entry-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .library-entry-detail { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+    .library-entry-button {
+      height: 26px; padding: 0 11px; border-radius: 999px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .library-entry-button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+    .library-entry-button.is-play { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+    .library-empty { font-size: 13px; color: var(--text-tertiary); line-height: 1.5; padding: 8px 0; }
+
+    /* ---- Stage: the 3D/2D canvas with labels on top ---- */
+    #stage {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      background:
+        radial-gradient(ellipse at 50% 40%, rgba(51, 128, 255, 0.10), transparent 60%),
+        radial-gradient(ellipse at 50% 120%, rgba(42, 63, 168, 0.18), transparent 55%),
+        var(--background);
+      cursor: grab;
+    }
+
+    #stage:active { cursor: grabbing; }
+
+    #stage canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #label-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .scene-label {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+      white-space: nowrap;
+    }
+
+    .scene-label.is-visible { opacity: 1; }
+
+    .scene-label-text {
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+      background: rgba(23, 25, 24, 0.86);
+      border: 1px solid rgba(51, 128, 255, 0.65);
+      padding: 4px 9px;
+      border-radius: 999px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    }
+
+    .scene-label-leader {
+      width: 1.5px;
+      height: 18px;
+      background: linear-gradient(rgba(51, 128, 255, 0.9), rgba(51, 128, 255, 0.2));
+    }
+
+    .scene-label-anchor {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      transform: translateY(3px);
+    }
+
+    .scene-card {
+      --card-accent: #3380ff;
+      position: absolute;
+      transform: translate(-50%, -50%);
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(23, 25, 24, 0.92);
+      border: 1px solid rgba(55, 59, 57, 0.9);
+      border-left: 3px solid var(--card-accent);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      transition: box-shadow 0.3s ease, border-color 0.3s ease;
+    }
+
+    .scene-card.is-highlighted {
+      border-color: var(--card-accent);
+      box-shadow: 0 0 0 1px var(--card-accent), 0 8px 28px rgba(51, 128, 255, 0.35);
+    }
+
+    .scene-card-title {
+      font-size: 13px;
+      font-weight: 650;
+      color: #ffffff;
+      margin-bottom: 3px;
+    }
+
+    .scene-card-body {
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-secondary);
+    }
+
+    #loading-message {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--text-tertiary);
+      pointer-events: none;
+    }
+
+    /* ---- Caption: the current step's narration ---- */
+    #caption {
+      min-height: 76px;
+      padding: 14px 20px 6px;
+      font-size: 15px;
+      line-height: 1.45;
+      color: var(--text-primary);
+      transition: opacity 0.3s ease;
+    }
+
+    #caption.is-changing { opacity: 0; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px 14px;
+    }
+
+    .control-button {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .control-button:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-primary);
+    }
+
+    .control-button.is-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+
+    .control-button.is-primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+
+    .control-button:disabled {
+      opacity: 0.35;
+      cursor: default;
+      background: transparent;
+    }
+
+    #step-dots {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .step-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      border: none;
+      padding: 0;
+      background: var(--border);
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+
+    .step-dot:hover { background: var(--text-tertiary); }
+    .step-dot.is-done { background: rgba(51, 128, 255, 0.45); }
+    .step-dot.is-current { background: var(--accent); transform: scale(1.35); }
+  </style>
+</head>
+<body>
+  <div id="explainer">
+    <div id="header">
+      <div id="scene-title">heySona</div>
+      <div id="step-counter"></div>
+      <button class="header-button" id="quiz-button" title="Check your understanding" hidden>Quiz</button>
+      <button class="header-button" id="library-button" title="Saved explanations">Library</button>
+    </div>
+
+    <div id="stage">
+      <div id="label-layer"></div>
+      <div id="loading-message">Preparing the explanation…</div>
+
+      <!-- Quiz: a few multiple-choice questions after the explanation. -->
+      <div class="stage-panel" id="quiz-panel" hidden>
+        <div class="stage-panel-header">
+          <div class="stage-panel-title">Check your understanding</div>
+          <button class="panel-close-button" id="quiz-close-button" title="Close quiz">✕</button>
+        </div>
+        <div id="quiz-content"></div>
+      </div>
+
+      <!-- Library: explanations saved on this Mac. -->
+      <div class="stage-panel" id="library-panel" hidden>
+        <div class="stage-panel-header">
+          <div class="stage-panel-title">Saved explanations</div>
+          <button class="panel-close-button" id="library-close-button" title="Close library">✕</button>
+        </div>
+        <div id="library-content"></div>
+      </div>
+    </div>
+
+    <div id="caption"></div>
+
+    <div id="controls">
+      <button class="control-button" id="restart-button" title="Start over">↺</button>
+      <button class="control-button" id="previous-button" title="Previous step">◀</button>
+      <button class="control-button is-primary" id="play-pause-button" title="Play or pause">❚❚</button>
+      <button class="control-button" id="next-button" title="Next step">▶</button>
+      <div id="step-dots"></div>
+      <button class="control-button" id="close-button" title="Close (Esc)">✕</button>
+    </div>
+  </div>
+
+  <script src="three.min.js"></script>
+  <script src="visual-explainer.js"></script>
+</body>
+</html>
