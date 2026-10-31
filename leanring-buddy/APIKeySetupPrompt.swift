@@ -11,8 +11,11 @@ import AppKit
 @MainActor
 enum APIKeySetupPrompt {
     static func promptForMissingAPIKeysIfNeeded() {
+        // With the free Mac voice chosen, an ElevenLabs key isn't needed.
+        let isMacSystemVoiceChosen = UserDefaults.standard.string(forKey: "speechVoiceProvider") == SpeechVoiceProvider.macSystemVoice.rawValue
         let missingAPIKeyKinds = StoredAPIKeyKind.allCases.filter { apiKeyKind in
-            APIKeyKeychainStore.readAPIKey(for: apiKeyKind) == nil
+            if apiKeyKind == .elevenLabs && isMacSystemVoiceChosen { return false }
+            return APIKeyKeychainStore.readAPIKey(for: apiKeyKind) == nil
         }
 
         guard !missingAPIKeyKinds.isEmpty else { return }
@@ -31,8 +34,8 @@ enum APIKeySetupPrompt {
         apiKeyAlert.messageText = "Enter your \(apiKeyKind.serviceDisplayName) API key"
 
         var informativeText = "heySona saves it in your macOS Keychain and sends it only to that service.\n\nGet one at \(apiKeyKind.whereToGetKeyURL)."
-        if !apiKeyKind.isRequired {
-            informativeText += "\n\nOptional: skip it and heySona uses Apple's built-in speech recognition instead."
+        if let fallbackWithoutKeyDescription = apiKeyKind.fallbackWithoutKeyDescription {
+            informativeText += "\n\nOptional: skip it and heySona uses \(fallbackWithoutKeyDescription) instead."
         }
         apiKeyAlert.informativeText = informativeText
 

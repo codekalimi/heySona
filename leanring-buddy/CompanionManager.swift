@@ -78,7 +78,13 @@ final class CompanionManager: ObservableObject {
     }()
 
     lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
+        let ttsClient = ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
+        ttsClient.speechVoiceProvider = speechVoiceProvider
+        ttsClient.macSystemVoiceIdentifier = selectedMacSystemVoiceIdentifier
+        ttsClient.onFallbackToMacSystemVoice = { [weak self] elevenLabsFailureDescription in
+            self?.elevenLabsFallbackMessage = "ElevenLabs isn't working right now, so heySona is using the Mac voice. (\(elevenLabsFailureDescription))"
+        }
+        return ttsClient
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -187,6 +193,30 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(trimmedVoiceId, forKey: "selectedElevenLabsVoiceId")
         elevenLabsTTSClient.voiceId = trimmedVoiceId
     }
+
+    /// ElevenLabs or the free Mac voice. Persisted to UserDefaults.
+    @Published private(set) var speechVoiceProvider: SpeechVoiceProvider =
+        UserDefaults.standard.string(forKey: "speechVoiceProvider").flatMap(SpeechVoiceProvider.init(rawValue:)) ?? .elevenLabs
+
+    func setSpeechVoiceProvider(_ provider: SpeechVoiceProvider) {
+        speechVoiceProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "speechVoiceProvider")
+        elevenLabsTTSClient.speechVoiceProvider = provider
+        elevenLabsFallbackMessage = nil
+    }
+
+    /// The installed Mac voice; nil uses the best one for the user's language.
+    @Published private(set) var selectedMacSystemVoiceIdentifier: String? =
+        UserDefaults.standard.string(forKey: "selectedMacSystemVoiceIdentifier")
+
+    func setSelectedMacSystemVoiceIdentifier(_ voiceIdentifier: String) {
+        selectedMacSystemVoiceIdentifier = voiceIdentifier
+        UserDefaults.standard.set(voiceIdentifier, forKey: "selectedMacSystemVoiceIdentifier")
+        elevenLabsTTSClient.macSystemVoiceIdentifier = voiceIdentifier
+    }
+
+    /// Shown in Settings after ElevenLabs failed and the Mac voice took over.
+    @Published var elevenLabsFallbackMessage: String?
 
     func fetchAvailableElevenLabsVoices() async throws -> [ElevenLabsVoice] {
         try await elevenLabsTTSClient.fetchAvailableVoices()
