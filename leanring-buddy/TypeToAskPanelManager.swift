@@ -3,7 +3,7 @@
 //  leanring-buddy
 //
 //  A Spotlight-style floating text box for asking heySona a question by
-//  typing instead of talking. Opened with cmd + shift + space or from the
+//  typing instead of talking. Opened by double-tapping control, or from the
 //  menu bar panel. Enter sends the question, Esc or clicking away closes it.
 //
 

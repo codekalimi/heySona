@@ -2,7 +2,7 @@
 //  GlobalHotKeyRegistrar.swift
 //  leanring-buddy
 //
-//  Registers system-wide key combos (like cmd + shift + space) with Carbon's
+//  Registers system-wide key combos (like Esc while a reply plays) with Carbon's
 //  RegisterEventHotKey. Unlike the listen-only CGEvent tap used for
 //  push-to-talk, a Carbon hot key consumes the keystroke, so the app in front
 //  never receives it (no stray space typed, no Esc closing someone's dialog).

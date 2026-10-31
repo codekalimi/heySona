@@ -147,7 +147,7 @@ struct CompanionPanelView: View {
                 Text("Hold Control+Option to talk.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
-                Text("Press ⌘⇧Space to type instead. Press Esc to stop a reply.")
+                Text("Double-tap Control to type instead. Press Esc to stop a reply.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -582,7 +582,7 @@ struct CompanionPanelView: View {
                 Text("Type a question")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Text("⌘⇧Space")
+                Text("⌃ ⌃")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
             }

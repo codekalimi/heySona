@@ -6,6 +6,11 @@
 //  background. Uses a listen-only CGEvent tap so modifier-only shortcuts like
 //  ctrl + option behave more like a real system-wide voice tool.
 //
+//  The same tap detects type-to-ask: control tapped twice quickly on its
+//  own. Any other key, modifier, or click in between cancels it, so ctrl
+//  shortcuts (ctrl + C in Terminal, ctrl-click) and push-to-talk never
+//  trigger it.
+//
 
 import AppKit
 import Combine
@@ -23,6 +28,18 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
 
+    /// Sends when control is tapped twice on its own (type-to-ask).
+    let typeToAskDoubleTapPublisher = PassthroughSubject<Void, Never>()
+    private var isControlCurrentlyDown = false
+    /// When the current control press began; nil if it was cancelled.
+    private var currentControlPressStartDate: Date?
+    /// When a clean first tap ended, waiting for the second.
+    private var firstControlTapEndDate: Date?
+    /// Longer than this is a hold (like the start of ctrl + option), not a tap.
+    private static let maximumControlTapHoldSeconds: TimeInterval = 0.35
+    /// The second tap must start this soon after the first one ends.
+    private static let maximumSecondsBetweenControlTaps: TimeInterval = 0.4
+
     deinit {
         stop()
     }
@@ -34,7 +51,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
-        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
+        // Mouse downs are watched only so a ctrl-click doesn't count as a
+        // type-to-ask tap.
+        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
             currentMask | (CGEventMask(1) << eventType.rawValue)
         }
@@ -127,6 +146,64 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             shortcutTransitionPublisher.send(.released)
         }
 
+        updateTypeToAskDoubleTapDetection(eventType: eventType, modifierFlags: event.flags)
+
         return Unmanaged.passUnretained(event)
+    }
+
+    private func updateTypeToAskDoubleTapDetection(eventType: CGEventType, modifierFlags: CGEventFlags) {
+        guard eventType == .flagsChanged else {
+            // A key or click means control is being used for something else
+            // (ctrl + C, ctrl-click, ...), so neither tap counts.
+            if eventType == .keyDown || eventType == .leftMouseDown
+                || eventType == .rightMouseDown || eventType == .otherMouseDown {
+                cancelTypeToAskDoubleTap()
+            }
+            return
+        }
+
+        let isControlDown = modifierFlags.contains(.maskControl)
+        let isAnotherModifierDown = modifierFlags.contains(.maskCommand)
+            || modifierFlags.contains(.maskAlternate)
+            || modifierFlags.contains(.maskShift)
+
+        if isAnotherModifierDown {
+            // ctrl + option is push-to-talk; ctrl + cmd/shift are shortcuts.
+            cancelTypeToAskDoubleTap()
+            isControlCurrentlyDown = isControlDown
+            return
+        }
+
+        if isControlDown && !isControlCurrentlyDown {
+            // Control went down.
+            isControlCurrentlyDown = true
+            let currentDate = Date()
+            if let firstControlTapEndDate,
+               currentDate.timeIntervalSince(firstControlTapEndDate) > Self.maximumSecondsBetweenControlTaps {
+                self.firstControlTapEndDate = nil
+            }
+            currentControlPressStartDate = currentDate
+        } else if !isControlDown && isControlCurrentlyDown {
+            // Control came up.
+            isControlCurrentlyDown = false
+            guard let currentControlPressStartDate else { return }
+            self.currentControlPressStartDate = nil
+            let currentDate = Date()
+            guard currentDate.timeIntervalSince(currentControlPressStartDate) <= Self.maximumControlTapHoldSeconds else {
+                firstControlTapEndDate = nil
+                return
+            }
+            if firstControlTapEndDate != nil {
+                firstControlTapEndDate = nil
+                typeToAskDoubleTapPublisher.send()
+            } else {
+                firstControlTapEndDate = currentDate
+            }
+        }
+    }
+
+    private func cancelTypeToAskDoubleTap() {
+        currentControlPressStartDate = nil
+        firstControlTapEndDate = nil
     }
 }

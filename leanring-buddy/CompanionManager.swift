@@ -162,8 +162,8 @@ final class CompanionManager: ObservableObject {
 
     let globalHotKeyRegistrar = GlobalHotKeyRegistrar()
     let typeToAskPanelManager = TypeToAskPanelManager()
-    /// cmd + shift + space, registered for the app's whole lifetime.
-    var typeToAskHotKey: RegisteredGlobalHotKey?
+    /// Double-tap control, for the app's whole lifetime.
+    var typeToAskDoubleTapCancellable: AnyCancellable?
     /// Esc, registered only while a reply is being generated or spoken, so
     /// Esc keeps working normally in other apps the rest of the time.
     var escapeToStopHotKey: RegisteredGlobalHotKey?
@@ -462,7 +462,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        registerTypeToAskHotKeyIfNeeded()
+        bindTypeToAskDoubleTap()
         restoreConversationContextFromArchive()
         // Load the on-device speech model now, so the first push-to-talk
         // doesn't wait for it.
