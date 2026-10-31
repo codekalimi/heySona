@@ -32,8 +32,24 @@ extension CompanionManager {
         var userMessageContextLines = ["current local time: \(Self.currentLocalTimeDescription())"]
         // Menus, panels, and shortcuts differ between apps and versions, so
         // Claude is told exactly which app (and version) the user is in.
+        let frontmostBundleIdentifier = Self.frontmostApplicationBundleIdentifier()
         if let frontmostApplicationDescription = Self.frontmostApplicationDescription() {
-            userMessageContextLines.append("app in front: \(frontmostApplicationDescription) (match its menus, panel names, and shortcuts to this version)")
+            // The bundle ID lets Claude save a procedure for this app.
+            let bundleIdentifierNote = frontmostBundleIdentifier.map { ", bundle id \($0)" } ?? ""
+            userMessageContextLines.append("app in front: \(frontmostApplicationDescription)\(bundleIdentifierNote) (match its menus, panel names, and shortcuts to this version)")
+        }
+
+        // Skills: the catalog goes in the (cacheable) system prompt, and the
+        // ones matching this question and app go in the user message.
+        systemPrompt += SkillTools.systemPromptSection(skillCatalog: skillLibrary.enabledSkills)
+        toolDefinitions += SkillTools.toolDefinitions
+        let matchedSkills = skillLibrary.skillsForVoiceRequest(
+            transcript: transcript,
+            frontmostBundleIdentifier: frontmostBundleIdentifier
+        )
+        skillLibrary.lastUsedSkillNames = matchedSkills.map(\.name)
+        if !matchedSkills.isEmpty {
+            print("🧩 Skills used: \(matchedSkills.map(\.name).joined(separator: ", "))")
         }
 
         if isScreenDrawingEnabled {
@@ -100,7 +116,10 @@ extension CompanionManager {
         systemPrompt += PersonalContextTools.noteSystemPromptSection(defaultNoteDestination: defaultNoteDestination)
         toolDefinitions += PersonalContextTools.noteToolDefinitions
 
-        let userPrompt = transcript + "\n\n(" + userMessageContextLines.joined(separator: "\n") + ")"
+        var userPrompt = transcript + "\n\n(" + userMessageContextLines.joined(separator: "\n") + ")"
+        if let matchedSkillsText = SkillTools.userMessageSkillsText(matchedSkills) {
+            userPrompt += "\n\n" + matchedSkillsText
+        }
 
         return RequestSetup(
             systemPrompt: systemPrompt,
@@ -120,6 +139,8 @@ extension CompanionManager {
             let toolResult: MacActionResult
             if MacActionToolName(rawValue: toolName) != nil {
                 toolResult = await self.macActionExecutor.execute(toolName: toolName, toolInput: toolInput)
+            } else if SkillToolName(rawValue: toolName) != nil {
+                toolResult = SkillTools.execute(toolName: toolName, toolInput: toolInput, skillLibrary: self.skillLibrary)
             } else if toolName == ConversationArchiveTools.searchToolName {
                 toolResult = ConversationArchiveTools.executeSearch(
                     toolInput: toolInput,
@@ -154,6 +175,15 @@ extension CompanionManager {
             .flatMap { Bundle(url: $0) }?
             .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         return [applicationName, applicationVersion].compactMap { $0 }.joined(separator: " ")
+    }
+
+    /// e.g. "com.blackmagic-design.DaVinciResolve", or nil when heySona is in front.
+    static func frontmostApplicationBundleIdentifier() -> String? {
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+              frontmostApplication.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            return nil
+        }
+        return frontmostApplication.bundleIdentifier
     }
 
     /// e.g. "Saturday, October 31, 2026 at 3:12 PM (America/Los_Angeles)"

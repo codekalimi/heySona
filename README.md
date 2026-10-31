@@ -81,6 +81,8 @@ Things to try:
 ### Settings
 
 - **API keys:** save, replace, or remove each key (only the last 4 characters are ever shown).
+- **Skills:** short guides for topics (neural networks, Big O, recursion…) and apps (Xcode, Figma, DaVinci Resolve, Blender…) that heySona adds only when they fit. Add your own as Markdown files. After it guides you through a task, heySona can save the steps as a procedure and follow them next time.
+- **Visual self-check:** explanations fix their own layout (off-screen objects, overlapping labels); optionally, Claude reviews a snapshot of every step and corrects it.
 - **Conversation history:** heySona remembers past conversations across restarts, writes a short journal entry for each session so it knows what you've been learning, and can search older chats when you mention them. Stored only on your Mac (never screenshots); clear it anytime in Settings.
 - **Voice:** speak replies aloud or show them as text, choose ElevenLabs or the free Mac voice, pick a voice, and preview it.
 - **Mac actions:** turn all actions on or off.

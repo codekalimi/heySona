@@ -95,6 +95,19 @@ final class CompanionManager: ObservableObject {
 
     /// Past exchanges and session summaries, saved on this Mac.
     let conversationArchiveStore = ConversationArchiveStore()
+    /// Topic, app, and saved-procedure skills (SkillLibrary.swift).
+    let skillLibrary = SkillLibrary()
+
+    /// Optional Claude review of new visual explanations (VisualExplanationReviewer.swift).
+    @Published private(set) var isVisualSelfCheckEnabled: Bool =
+        UserDefaults.standard.bool(forKey: "isVisualSelfCheckEnabled")
+    let visualExplanationReviewer = VisualExplanationReviewer()
+    var visualExplanationReviewTask: Task<Void, Never>?
+
+    func setVisualSelfCheckEnabled(_ isEnabled: Bool) {
+        isVisualSelfCheckEnabled = isEnabled
+        UserDefaults.standard.set(isEnabled, forKey: "isVisualSelfCheckEnabled")
+    }
     /// When on, exchanges are saved, summarized, searchable, and restored at launch.
     @Published var isConversationHistoryEnabled: Bool =
         UserDefaults.standard.object(forKey: "isConversationHistoryEnabled") as? Bool ?? true

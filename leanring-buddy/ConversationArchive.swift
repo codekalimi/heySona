@@ -168,7 +168,7 @@ final class ConversationArchiveStore: ObservableObject {
         guard !trimmedSearchQuery.isEmpty else { return "The search query was empty." }
         guard !archivedExchanges.isEmpty else { return "There are no past conversations saved yet." }
 
-        let queryTerms = Set(Self.searchTerms(in: trimmedSearchQuery))
+        let queryTerms = Set(SearchTextNormalizer.searchTerms(in: trimmedSearchQuery))
         guard !queryTerms.isEmpty else { return "The search query had no searchable words." }
 
         // The most recent 3,000 exchanges keep the first search fast.
@@ -246,31 +246,9 @@ final class ConversationArchiveStore: ObservableObject {
     private func searchTermCounts(documentID: String, text: String) -> [String: Int] {
         if let cachedTermCounts = searchTermCountsByDocumentID[documentID] { return cachedTermCounts }
         var termCounts: [String: Int] = [:]
-        for searchTerm in Self.searchTerms(in: text) { termCounts[searchTerm, default: 0] += 1 }
+        for searchTerm in SearchTextNormalizer.searchTerms(in: text) { termCounts[searchTerm, default: 0] += 1 }
         searchTermCountsByDocumentID[documentID] = termCounts
         return termCounts
-    }
-
-    /// Lowercased base forms ("weights" → "weight", "learned" → "learn") of
-    /// the meaningful words in `text`; very common words are skipped.
-    private static func searchTerms(in text: String) -> [String] {
-        let commonWords: Set<String> = ["the", "and", "you", "that", "this", "what", "how", "for", "with", "are", "was", "about", "can", "did", "does", "from", "have", "your", "its", "when", "why", "who", "which", "there", "they", "then", "than", "just", "like", "tell", "told", "said", "say", "me", "my", "be", "is", "it", "do", "of", "to", "in", "on", "an", "or", "so", "we", "us", "our", "not", "all", "any", "some", "would", "could", "should", "will", "get", "got", "one", "user", "heysona"]
-        let lemmaTagger = NLTagger(tagSchemes: [.lemma])
-        lemmaTagger.string = text
-        var searchTerms: [String] = []
-        lemmaTagger.enumerateTags(
-            in: text.startIndex..<text.endIndex,
-            unit: .word,
-            scheme: .lemma,
-            options: [.omitWhitespace, .omitPunctuation]
-        ) { lemmaTag, wordRange in
-            let baseForm = (lemmaTag?.rawValue ?? String(text[wordRange])).lowercased()
-            if baseForm.count >= 2, !commonWords.contains(baseForm) {
-                searchTerms.append(baseForm)
-            }
-            return true
-        }
-        return searchTerms
     }
 
     // MARK: - Formatting
@@ -365,5 +343,30 @@ enum ConversationArchiveTools {
         let maximumExchangeCount = max(1, min(8, requestedResultCount))
         print("🗂️ Searching past conversations: \(searchQuery)")
         return .success(conversationArchiveStore.searchDescription(for: searchQuery, maximumExchangeCount: maximumExchangeCount))
+    }
+}
+
+/// Shared by conversation search and skill matching.
+enum SearchTextNormalizer {
+    /// Lowercased base forms ("weights" → "weight", "learned" → "learn") of
+    /// the meaningful words in `text`; very common words are skipped.
+    static func searchTerms(in text: String) -> [String] {
+        let commonWords: Set<String> = ["the", "and", "you", "that", "this", "what", "how", "for", "with", "are", "was", "about", "can", "did", "does", "from", "have", "your", "its", "when", "why", "who", "which", "there", "they", "then", "than", "just", "like", "tell", "told", "said", "say", "me", "my", "be", "is", "it", "do", "of", "to", "in", "on", "an", "or", "so", "we", "us", "our", "not", "all", "any", "some", "would", "could", "should", "will", "get", "got", "one", "user", "heysona"]
+        let lemmaTagger = NLTagger(tagSchemes: [.lemma])
+        lemmaTagger.string = text
+        var searchTerms: [String] = []
+        lemmaTagger.enumerateTags(
+            in: text.startIndex..<text.endIndex,
+            unit: .word,
+            scheme: .lemma,
+            options: [.omitWhitespace, .omitPunctuation]
+        ) { lemmaTag, wordRange in
+            let baseForm = (lemmaTag?.rawValue ?? String(text[wordRange])).lowercased()
+            if baseForm.count >= 2, !commonWords.contains(baseForm) {
+                searchTerms.append(baseForm)
+            }
+            return true
+        }
+        return searchTerms
     }
 }
