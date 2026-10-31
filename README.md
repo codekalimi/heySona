@@ -11,9 +11,9 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 
 ## Features
 
-- **Talk or type.** Hold **Control + Option** to talk, or press **⌘⇧Space** to type a question in a Spotlight-style box.
+- **Talk or type.** Hold **Control + Option** to talk, or double-tap **Control** to type a question in a Spotlight-style box.
 - **Sees your screen.** Each question includes a screenshot of every connected display, taken only when you ask.
-- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick. Turn speech off and replies appear as a text bubble next to your cursor.
+- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick, or a free built-in Mac voice. Turn speech off and replies appear as a text bubble next to your cursor.
 - **Points at things.** A small blue cursor flies to the button, menu, or text it's talking about, on any monitor.
 - **Stop anytime.** Press **Esc** while heySona is thinking or speaking to cut it off.
 - **Does things on your Mac.** Open apps, links, and files; find files; play, pause, and skip tracks; change the volume; add reminders and calendar events; run your Shortcuts (you approve each one).
@@ -28,8 +28,8 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 - A recent version of Xcode (with its license accepted: open Xcode once and click **Agree**)
 - API keys:
   - [Anthropic](https://console.anthropic.com/settings/keys) (required)
-  - [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) (required for spoken replies)
-  - [AssemblyAI](https://www.assemblyai.com/dashboard) (optional; without it heySona uses Apple's built-in speech recognition)
+  - [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) (optional: the most natural voice; without it, or when it runs out of credits, heySona uses the free built-in Mac voice)
+  - [AssemblyAI](https://www.assemblyai.com/dashboard) (optional; or pick WhisperKit in Settings to transcribe on your Mac for free; with neither, heySona uses Apple's built-in speech recognition)
 
 ## Setup
 
@@ -63,7 +63,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 | Do this | To |
 |---|---|
 | Hold **Control + Option**, speak, release | Ask about your screen |
-| **⌘⇧Space**, type, **Enter** | Ask by typing |
+| Double-tap **Control**, type, **Enter** | Ask by typing |
 | **Esc** | Stop the current reply |
 | Click the menu bar icon | Open the panel (model picker, "Type a question", Settings) |
 | Click the gear in the panel | Open Settings |
@@ -81,7 +81,8 @@ Things to try:
 ### Settings
 
 - **API keys:** save, replace, or remove each key (only the last 4 characters are ever shown).
-- **Voice:** speak replies aloud or show them as text, pick an ElevenLabs voice, and preview it.
+- **Conversation history:** heySona remembers past conversations across restarts, writes a short journal entry for each session so it knows what you've been learning, and can search older chats when you mention them. Stored only on your Mac (never screenshots); clear it anytime in Settings.
+- **Voice:** speak replies aloud or show them as text, choose ElevenLabs or the free Mac voice, pick a voice, and preview it.
 - **Mac actions:** turn all actions on or off.
 - **Memory:** turn memory on or off, review every remembered fact, delete one or all.
 - **Project:** turn project awareness on or off, and pin a fallback folder.
@@ -101,7 +102,7 @@ Things to try:
 
 heySona is a SwiftUI app with AppKit where it needs it: a menu bar item, a floating control panel, a full-screen transparent overlay for the cursor, and a regular window for Settings.
 
-1. **Listen.** Push-to-talk audio streams to AssemblyAI over a websocket (or goes to Apple Speech) and becomes a transcript when you release the keys.
+1. **Listen.** Push-to-talk audio streams to AssemblyAI over a websocket, or is transcribed on your Mac by WhisperKit (or Apple Speech), and becomes a transcript when you release the keys.
 2. **Look.** ScreenCaptureKit captures every display, labeled so Claude knows which screen the cursor is on.
 3. **Think.** The transcript, screenshots, recent conversation, remembered facts, the local time, and any active project are sent to Claude with streaming. Claude can call tools (Mac actions, memory, project files, notes) in a loop before it answers.
 4. **Answer.** The reply is spoken through ElevenLabs (or shown as text). If it contains a `[POINT:x,y:label:screenN]` tag, the cursor flies to that spot.
@@ -122,7 +123,7 @@ leanring-buddy/                     Swift source
   LongTermMemoryStore.swift           Remembered facts
   ActiveProjectContext.swift          Project detection and read-only file access
   NoteSaver.swift                     Apple Notes, Obsidian, and Markdown notes
-  TypeToAskPanelManager.swift         ⌘⇧Space text box
+  TypeToAskPanelManager.swift         Double-tap Control text box
   GlobalHotKeyRegistrar.swift         System-wide shortcuts
   SettingsView.swift                  Settings window
   APIKeyKeychainStore.swift           API keys in the Keychain
@@ -144,3 +145,7 @@ swift scripts/generate-brand-assets.swift
 ## Credits and license
 
 heySona is built on the open-source [Clicky](https://github.com/farzaa/clicky) project by Farza, released under the MIT License. See [`LICENSE`](LICENSE).
+
+On-device speech-to-text uses [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift) (MIT) with Whisper models downloaded from Hugging Face on first use.
+
+The visual explainer bundles [three.js](https://github.com/mrdoob/three.js) r160 and [KaTeX](https://github.com/KaTeX/KaTeX) 0.18.11, both MIT-licensed (license files are next to them in `leanring-buddy/VisualExplainer.bundle/`).

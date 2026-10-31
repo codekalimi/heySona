@@ -2,31 +2,33 @@
 //  CompanionManager+Shortcuts.swift
 //  leanring-buddy
 //
-//  Type-to-ask (cmd + shift + space) and Esc to stop a reply.
+//  Type-to-ask (double-tap control) and Esc to stop a reply.
 //  Split out of CompanionManager.swift; the state these methods use
 //  lives there.
 //
 
 import AppKit
 import Carbon
+import Combine
 import Foundation
 import SwiftUI
 
 extension CompanionManager {
-    func registerTypeToAskHotKeyIfNeeded() {
-        guard typeToAskHotKey == nil else { return }
-        typeToAskHotKey = globalHotKeyRegistrar.register(
-            carbonKeyCode: kVK_Space,
-            carbonModifierFlags: cmdKey | shiftKey,
-            action: { [weak self] in
+    /// Control tapped twice, detected by the same listen-only event tap as
+    /// push-to-talk (a modifier-only shortcut can't be a Carbon hot key).
+    func bindTypeToAskDoubleTap() {
+        guard typeToAskDoubleTapCancellable == nil else { return }
+        typeToAskDoubleTapCancellable = globalPushToTalkShortcutMonitor
+            .typeToAskDoubleTapPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
                 self?.toggleTypeToAskPanel()
             }
-        )
     }
 
     func toggleTypeToAskPanel() {
         if typeToAskPanelManager.isPanelVisible {
-            typeToAskPanelManager.hidePanel()
+            typeToAskPanelManager.hidePanel(returningFocusToPreviousApp: true)
         } else {
             openTypeToAskPanel()
         }

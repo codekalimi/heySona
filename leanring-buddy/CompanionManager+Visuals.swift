@@ -28,6 +28,13 @@ extension CompanionManager {
         visualExplainerPanelManager.showLibrary(entriesJSON: ExplanationLibraryStore.libraryEntriesJSON())
     }
 
+    /// Opens the explainer window on the concept map of everything learned.
+    func showConceptMap() {
+        configureVisualExplainerWindowCallbacks()
+        visualExplainerPanelManager.showPreparingStatus("Here's how the ideas you've learned connect.")
+        visualExplainerPanelManager.showConceptMap(graphJSON: ExplanationLibraryStore.conceptGraphJSON())
+    }
+
     /// `isFollowUp` adds steps to the explanation already open instead of
     /// starting a new one. `waitForLeadInToFinish` lets narration wait for the
     /// spoken lead-in ("sure, let me show you…") while it's still streaming.
@@ -50,7 +57,8 @@ extension CompanionManager {
             claudeAPI: claudeAPI,
             elevenLabsTTSClient: elevenLabsTTSClient,
             explainerPanelManager: visualExplainerPanelManager,
-            isNarrationEnabled: isSpokenReplyEnabled
+            isNarrationEnabled: isSpokenReplyEnabled,
+            learnedTopicsDescription: ExplanationLibraryStore.learnedTopicsDescription()
         )
         visualExplanationSession.onSceneFailed = { [weak self] spokenFailureMessage in
             guard let self else { return }
@@ -64,12 +72,13 @@ extension CompanionManager {
         }
         // Save every finished explanation (a follow-up updates the same
         // library entry) and remember it for further follow-ups.
-        visualExplanationSession.onSceneCompleted = { [weak self] sceneLines, sceneTitle in
+        visualExplanationSession.onSceneCompleted = { [weak self] sceneLines, sceneTitle, concepts in
             guard let self else { return }
             let savedExplanationID = ExplanationLibraryStore.save(
                 sceneLines: sceneLines,
                 title: sceneTitle,
                 question: explanationBeingFollowedUp?.question ?? userQuestion,
+                concepts: concepts,
                 existingExplanationID: explanationBeingFollowedUp?.savedExplanationID
             )
             self.openVisualExplanation = OpenVisualExplanation(
@@ -118,6 +127,9 @@ extension CompanionManager {
     func configureVisualExplainerWindowCallbacks() {
         visualExplainerPanelManager.onLibraryRequested = { [weak self] in
             self?.visualExplainerPanelManager.showLibrary(entriesJSON: ExplanationLibraryStore.libraryEntriesJSON())
+        }
+        visualExplainerPanelManager.onConceptMapRequested = { [weak self] in
+            self?.visualExplainerPanelManager.showConceptMap(graphJSON: ExplanationLibraryStore.conceptGraphJSON())
         }
         visualExplainerPanelManager.onLibraryEntrySelected = { [weak self] explanationID in
             self?.replaySavedExplanation(explanationID: explanationID)

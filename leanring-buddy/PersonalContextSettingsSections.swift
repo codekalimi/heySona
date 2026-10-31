@@ -2,7 +2,8 @@
 //  PersonalContextSettingsSections.swift
 //  leanring-buddy
 //
-//  Settings sections for long-term memory, project awareness, and notes.
+//  Settings sections for long-term memory, conversation history, project
+//  awareness, and notes.
 //  Uses the shared layout helpers from SettingsView.swift.
 //
 
@@ -86,6 +87,94 @@ struct LongTermMemorySettingsSection: View {
         confirmationAlert.addButton(withTitle: "Cancel")
         if confirmationAlert.runModal() == .alertFirstButtonReturn {
             longTermMemoryStore.forgetAllFacts()
+        }
+    }
+}
+
+// MARK: - Conversation History
+
+struct ConversationHistorySettingsSection: View {
+    @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var conversationArchiveStore: ConversationArchiveStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsSectionTitle("CONVERSATION HISTORY")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Remember past conversations")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(DS.Colors.textSecondary)
+                            Text("Saves what you say and heySona's replies (never screenshots) on this Mac. Each session gets a short journal entry so heySona knows what you've been learning, and it can search older chats when you mention them.")
+                                .font(.system(size: 10))
+                                .foregroundColor(DS.Colors.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer()
+
+                        Toggle("", isOn: Binding(
+                            get: { companionManager.isConversationHistoryEnabled },
+                            set: { companionManager.setConversationHistoryEnabled($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .tint(DS.Colors.accent)
+                        .pointerCursor()
+                    }
+
+                    if conversationArchiveStore.sessionSummaries.isEmpty {
+                        Text(conversationArchiveStore.archivedExchangeCount == 0
+                             ? "Nothing saved yet."
+                             : "Journal entries appear here 30 minutes after a session ends.")
+                            .font(.system(size: 11))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(conversationArchiveStore.sessionSummaries.prefix(5)) { sessionSummary in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(ConversationArchiveStore.shortDateDescription(sessionSummary.endDate))
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(DS.Colors.textTertiary)
+                                    Text(sessionSummary.summaryText)
+                                        .font(.system(size: 12))
+                                        .foregroundColor(DS.Colors.textPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Text("\(conversationArchiveStore.archivedExchangeCount) exchanges · \(conversationArchiveStore.sessionSummaries.count) sessions")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                        Spacer()
+                        SettingsCapsuleButton(
+                            title: "Clear History",
+                            isProminent: false,
+                            isEnabled: conversationArchiveStore.archivedExchangeCount > 0,
+                            action: confirmAndClearHistory
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func confirmAndClearHistory() {
+        let confirmationAlert = NSAlert()
+        confirmationAlert.messageText = "Delete all conversation history?"
+        confirmationAlert.informativeText = "This deletes \(conversationArchiveStore.archivedExchangeCount) saved exchanges and \(conversationArchiveStore.sessionSummaries.count) journal entries, and starts a fresh conversation. It can't be undone."
+        confirmationAlert.alertStyle = .warning
+        confirmationAlert.addButton(withTitle: "Delete")
+        confirmationAlert.addButton(withTitle: "Cancel")
+        if confirmationAlert.runModal() == .alertFirstButtonReturn {
+            companionManager.clearConversationHistory()
         }
     }
 }

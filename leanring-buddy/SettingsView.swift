@@ -16,11 +16,19 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 apiKeysSection
                 voiceSection
+                SpeechToTextSettingsSection(
+                    companionManager: companionManager,
+                    whisperKitSpeechModelManager: WhisperKitSpeechModelManager.shared
+                )
                 visualsSection
                 macActionsSection
                 LongTermMemorySettingsSection(
                     companionManager: companionManager,
                     longTermMemoryStore: companionManager.longTermMemoryStore
+                )
+                ConversationHistorySettingsSection(
+                    companionManager: companionManager,
+                    conversationArchiveStore: companionManager.conversationArchiveStore
                 )
                 ProjectAwarenessSettingsSection(companionManager: companionManager)
                 NotesSettingsSection(companionManager: companionManager)
@@ -78,8 +86,55 @@ struct SettingsView: View {
                 }
             }
 
-            ElevenLabsVoicePickerCard(companionManager: companionManager)
-                .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+            settingsCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Voice")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+
+                        Spacer()
+
+                        Picker("", selection: Binding(
+                            get: { companionManager.speechVoiceProvider },
+                            set: { companionManager.setSpeechVoiceProvider($0) }
+                        )) {
+                            ForEach(SpeechVoiceProvider.allCases) { provider in
+                                Text(provider.displayName).tag(provider)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .pointerCursor()
+                    }
+
+                    Text(companionManager.speechVoiceProvider == .elevenLabs
+                         ? "Most natural. If ElevenLabs fails (for example, out of credits), heySona switches to the Mac voice on its own."
+                         : "Free and works offline. Step timing is estimated instead of exact.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let elevenLabsFallbackMessage = companionManager.elevenLabsFallbackMessage {
+                        Text(elevenLabsFallbackMessage)
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.warningText)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+
+            Group {
+                if companionManager.speechVoiceProvider == .elevenLabs {
+                    ElevenLabsVoicePickerCard(companionManager: companionManager)
+                } else {
+                    MacSystemVoicePickerCard(companionManager: companionManager)
+                }
+            }
+            .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
         }
     }
 
@@ -138,6 +193,12 @@ struct SettingsView: View {
                             isProminent: false,
                             isEnabled: true,
                             action: { companionManager.showVisualExplanationLibrary() }
+                        )
+                        SettingsCapsuleButton(
+                            title: "Concept map",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showConceptMap() }
                         )
                         SettingsCapsuleButton(
                             title: "Rocket demo",
@@ -452,6 +513,201 @@ private struct APIKeySettingsRow: View {
     private func removeSavedAPIKey() {
         APIKeyKeychainStore.deleteAPIKey(for: apiKeyKind)
         refreshSavedAPIKeySuffix()
+    }
+}
+
+// MARK: - Speech To Text
+
+private struct SpeechToTextSettingsSection: View {
+    @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var whisperKitSpeechModelManager: WhisperKitSpeechModelManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsSectionTitle("SPEECH TO TEXT")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Service")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+
+                        Spacer()
+
+                        Picker("", selection: Binding(
+                            get: { companionManager.speechToTextChoice },
+                            set: { companionManager.setSpeechToTextChoice($0) }
+                        )) {
+                            ForEach(SpeechToTextChoice.allCases) { choice in
+                                Text(choice.displayName).tag(choice)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .pointerCursor()
+                    }
+
+                    Text(companionManager.speechToTextChoice == .assemblyAI
+                         ? "Cloud. Transcribes while you talk, so text is ready the moment you let go. Needs an AssemblyAI key (without one, Apple's speech recognition is used)."
+                         : "Runs on your Mac: free, private, works offline. Transcribes after you let go (about a quarter second with the Fast model).")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if companionManager.speechToTextChoice == .whisperKit {
+                        HStack {
+                            Text("Model")
+                                .font(.system(size: 12))
+                                .foregroundColor(DS.Colors.textSecondary)
+                            Spacer()
+                            Picker("", selection: Binding(
+                                get: { companionManager.selectedWhisperKitSpeechModel },
+                                set: { companionManager.setSelectedWhisperKitSpeechModel($0) }
+                            )) {
+                                ForEach(WhisperKitSpeechModel.allCases) { speechModel in
+                                    Text(speechModel.displayName).tag(speechModel)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                            .pointerCursor()
+                        }
+
+                        whisperKitModelStatusRow
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var whisperKitModelStatusRow: some View {
+        HStack(spacing: 8) {
+            switch whisperKitSpeechModelManager.modelState {
+            case .notPrepared:
+                statusText("Not loaded yet.", color: DS.Colors.textTertiary)
+            case .downloading(let fractionCompleted):
+                ProgressView(value: fractionCompleted)
+                    .progressViewStyle(.linear)
+                    .tint(DS.Colors.accent)
+                    .frame(width: 120)
+                statusText("Downloading the model… \(Int(fractionCompleted * 100))%", color: DS.Colors.textTertiary)
+            case .loading:
+                ProgressView()
+                    .controlSize(.small)
+                statusText("Getting the model ready. The very first time can take a minute or two.", color: DS.Colors.textTertiary)
+            case .ready:
+                statusText("Ready. Push-to-talk now runs on your Mac.", color: DS.Colors.success)
+            case .failed(let message):
+                statusText("Couldn't load the model: \(message)", color: DS.Colors.destructiveText)
+                Spacer()
+                SettingsCapsuleButton(
+                    title: "Retry",
+                    isProminent: false,
+                    isEnabled: true,
+                    action: { whisperKitSpeechModelManager.prepare(companionManager.selectedWhisperKitSpeechModel) }
+                )
+            }
+        }
+    }
+
+    private func statusText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundColor(color)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Mac Voice Picker
+
+private struct MacSystemVoicePickerCard: View {
+    @ObservedObject var companionManager: CompanionManager
+
+    @State private var installedVoices: [MacSystemVoice] = []
+    @State private var isPreviewingVoice = false
+    @State private var previewErrorMessage: String?
+
+    var body: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Mac voice")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Spacer()
+
+                    // After downloading a voice in System Settings.
+                    SettingsCapsuleButton(
+                        title: "Reload",
+                        isProminent: false,
+                        isEnabled: true,
+                        action: { installedVoices = MacSystemVoiceCatalog.installedVoices() }
+                    )
+                }
+
+                if installedVoices.isEmpty {
+                    Text("No voices found.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                } else {
+                    Picker("", selection: Binding(
+                        get: { companionManager.selectedMacSystemVoiceIdentifier ?? installedVoices.first?.identifier ?? "" },
+                        set: { companionManager.setSelectedMacSystemVoiceIdentifier($0) }
+                    )) {
+                        ForEach(installedVoices) { voice in
+                            Text(voice.pickerTitle).tag(voice.identifier)
+                        }
+                    }
+                    .labelsHidden()
+                    .pointerCursor()
+                }
+
+                Text("For a more natural voice, download a Premium or Enhanced one (free): System Settings > Accessibility > Spoken Content > System Voice > Manage Voices. Then press Reload.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let previewErrorMessage {
+                    Text(previewErrorMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.destructiveText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack {
+                    Spacer()
+                    SettingsCapsuleButton(
+                        title: isPreviewingVoice ? "Playing…" : "Preview",
+                        isProminent: false,
+                        isEnabled: !isPreviewingVoice,
+                        action: { Task { await previewSelectedVoice() } }
+                    )
+                }
+            }
+        }
+        .onAppear {
+            installedVoices = MacSystemVoiceCatalog.installedVoices()
+        }
+    }
+
+    private func previewSelectedVoice() async {
+        isPreviewingVoice = true
+        previewErrorMessage = nil
+        defer { isPreviewingVoice = false }
+
+        do {
+            try await companionManager.previewSelectedVoice()
+            // speakText returns once playback starts; keep the button in its
+            // "Playing…" state for roughly the length of the sample sentence.
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+        } catch {
+            previewErrorMessage = error.localizedDescription
+        }
     }
 }
 

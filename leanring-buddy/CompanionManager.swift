@@ -78,12 +78,32 @@ final class CompanionManager: ObservableObject {
     }()
 
     lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
+        let ttsClient = ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
+        ttsClient.speechVoiceProvider = speechVoiceProvider
+        ttsClient.macSystemVoiceIdentifier = selectedMacSystemVoiceIdentifier
+        ttsClient.onFallbackToMacSystemVoice = { [weak self] elevenLabsFailureDescription in
+            self?.elevenLabsFallbackMessage = "ElevenLabs isn't working right now, so heySona is using the Mac voice. (\(elevenLabsFailureDescription))"
+        }
+        return ttsClient
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+
+    // MARK: Conversation archive (CompanionManager+ConversationMemory.swift)
+
+    /// Past exchanges and session summaries, saved on this Mac.
+    let conversationArchiveStore = ConversationArchiveStore()
+    /// When on, exchanges are saved, summarized, searchable, and restored at launch.
+    @Published var isConversationHistoryEnabled: Bool =
+        UserDefaults.standard.object(forKey: "isConversationHistoryEnabled") as? Bool ?? true
+    var currentConversationSessionID = UUID().uuidString
+    var lastConversationExchangeDate: Date?
+    var conversationSessionSummaryTask: Task<Void, Never>?
+    var isSummarizingConversationSessions = false
+    /// Session summaries are short, so the cheapest model writes them.
+    lazy var conversationSummaryClaudeAPI = ClaudeAPI(model: ClaudeModelCatalog.haiku.modelID)
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -142,8 +162,8 @@ final class CompanionManager: ObservableObject {
 
     let globalHotKeyRegistrar = GlobalHotKeyRegistrar()
     let typeToAskPanelManager = TypeToAskPanelManager()
-    /// cmd + shift + space, registered for the app's whole lifetime.
-    var typeToAskHotKey: RegisteredGlobalHotKey?
+    /// Double-tap control, for the app's whole lifetime.
+    var typeToAskDoubleTapCancellable: AnyCancellable?
     /// Esc, registered only while a reply is being generated or spoken, so
     /// Esc keeps working normally in other apps the rest of the time.
     var escapeToStopHotKey: RegisteredGlobalHotKey?
@@ -187,6 +207,58 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(trimmedVoiceId, forKey: "selectedElevenLabsVoiceId")
         elevenLabsTTSClient.voiceId = trimmedVoiceId
     }
+
+    /// AssemblyAI (cloud) or WhisperKit (on-device, free). Persisted.
+    @Published private(set) var speechToTextChoice: SpeechToTextChoice =
+        SpeechToTextChoice.savedChoice ?? .assemblyAI
+
+    func setSpeechToTextChoice(_ choice: SpeechToTextChoice) {
+        speechToTextChoice = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: SpeechToTextChoice.userDefaultsKey)
+        buddyDictationManager.reloadTranscriptionProvider()
+        if choice == .whisperKit {
+            WhisperKitSpeechModelManager.shared.prepare(selectedWhisperKitSpeechModel)
+        } else {
+            // Free the model's memory while it isn't used.
+            WhisperKitSpeechModelManager.shared.unload()
+        }
+    }
+
+    /// Which Whisper model WhisperKit uses. Persisted.
+    @Published private(set) var selectedWhisperKitSpeechModel: WhisperKitSpeechModel =
+        UserDefaults.standard.string(forKey: "selectedWhisperKitSpeechModel").flatMap(WhisperKitSpeechModel.init(rawValue:)) ?? .fastEnglish
+
+    func setSelectedWhisperKitSpeechModel(_ speechModel: WhisperKitSpeechModel) {
+        selectedWhisperKitSpeechModel = speechModel
+        UserDefaults.standard.set(speechModel.rawValue, forKey: "selectedWhisperKitSpeechModel")
+        if speechToTextChoice == .whisperKit {
+            WhisperKitSpeechModelManager.shared.prepare(speechModel)
+        }
+    }
+
+    /// ElevenLabs or the free Mac voice. Persisted to UserDefaults.
+    @Published private(set) var speechVoiceProvider: SpeechVoiceProvider =
+        UserDefaults.standard.string(forKey: "speechVoiceProvider").flatMap(SpeechVoiceProvider.init(rawValue:)) ?? .elevenLabs
+
+    func setSpeechVoiceProvider(_ provider: SpeechVoiceProvider) {
+        speechVoiceProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "speechVoiceProvider")
+        elevenLabsTTSClient.speechVoiceProvider = provider
+        elevenLabsFallbackMessage = nil
+    }
+
+    /// The installed Mac voice; nil uses the best one for the user's language.
+    @Published private(set) var selectedMacSystemVoiceIdentifier: String? =
+        UserDefaults.standard.string(forKey: "selectedMacSystemVoiceIdentifier")
+
+    func setSelectedMacSystemVoiceIdentifier(_ voiceIdentifier: String) {
+        selectedMacSystemVoiceIdentifier = voiceIdentifier
+        UserDefaults.standard.set(voiceIdentifier, forKey: "selectedMacSystemVoiceIdentifier")
+        elevenLabsTTSClient.macSystemVoiceIdentifier = voiceIdentifier
+    }
+
+    /// Shown in Settings after ElevenLabs failed and the Mac voice took over.
+    @Published var elevenLabsFallbackMessage: String?
 
     func fetchAvailableElevenLabsVoices() async throws -> [ElevenLabsVoice] {
         try await elevenLabsTTSClient.fetchAvailableVoices()
@@ -390,7 +462,13 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        registerTypeToAskHotKeyIfNeeded()
+        bindTypeToAskDoubleTap()
+        restoreConversationContextFromArchive()
+        // Load the on-device speech model now, so the first push-to-talk
+        // doesn't wait for it.
+        if speechToTextChoice == .whisperKit {
+            WhisperKitSpeechModelManager.shared.prepare(selectedWhisperKitSpeechModel)
+        }
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -585,6 +663,7 @@ final class CompanionManager: ObservableObject {
     - you can help with anything — coding, writing, general knowledge, brainstorming.
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
+    - when you explain a concept (especially computer science, math, data structures and algorithms, machine learning, deep learning, or ai agents), use simple english: everyday words, short sentences, and say what any technical word means the first time. start with the intuition and why the idea exists, give one real-world analogy that matches how it really works (for example, a hash map is like a coat check: your ticket number tells the attendant exactly which hook to go to), then a tiny concrete example with small numbers. when it helps, connect it to an idea they already know or learned earlier in this conversation. if they say they don't get it or ask for it simpler, explain it again from a different angle with a different, more everyday analogy instead of repeating yourself.
     - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
     - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
@@ -807,10 +886,11 @@ final class CompanionManager: ObservableObject {
                     userTranscript: transcript,
                     assistantResponse: assistantResponseForHistory
                 ))
+                recordExchangeInConversationArchive(userTranscript: transcript, assistantResponse: assistantResponseForHistory)
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
+                if conversationHistory.count > Self.maximumConversationHistoryExchangeCount {
+                    conversationHistory.removeFirst(conversationHistory.count - Self.maximumConversationHistoryExchangeCount)
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")

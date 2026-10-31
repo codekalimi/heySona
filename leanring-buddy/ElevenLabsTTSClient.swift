@@ -2,19 +2,57 @@
 //  ElevenLabsTTSClient.swift
 //  leanring-buddy
 //
-//  Streams text-to-speech audio from ElevenLabs and plays it back
-//  through the system audio output. Uses the streaming endpoint so
-//  playback begins before the full audio has been generated.
+//  Turns text into speech and plays it: with ElevenLabs, or with the free
+//  built-in Mac voice (MacSystemVoice.swift), chosen in Settings. When
+//  ElevenLabs fails (out of credits, bad key, offline), it falls back to the
+//  Mac voice so heySona keeps talking.
 //
 
 import AVFoundation
 import Foundation
+
+/// Which voice speaks heySona's replies.
+enum SpeechVoiceProvider: String, CaseIterable, Identifiable {
+    case elevenLabs
+    case macSystemVoice
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .elevenLabs: return "ElevenLabs"
+        case .macSystemVoice: return "Mac voice (free)"
+        }
+    }
+}
 
 @MainActor
 final class ElevenLabsTTSClient {
     /// ElevenLabs voice used for playback. Changeable at runtime from Settings.
     var voiceId: String
     private let session: URLSession
+
+    /// Set from Settings. Choosing a provider clears any ElevenLabs pause, so
+    /// switching back to ElevenLabs (e.g. after topping up) retries it at once.
+    var speechVoiceProvider: SpeechVoiceProvider = .elevenLabs {
+        didSet { elevenLabsPausedUntilDate = nil }
+    }
+    /// The installed Mac voice to use; nil picks the best one for the user's language.
+    var macSystemVoiceIdentifier: String?
+    /// Called when ElevenLabs fails and the Mac voice takes over, with the reason.
+    var onFallbackToMacSystemVoice: ((_ elevenLabsFailureDescription: String) -> Void)?
+
+    /// After ElevenLabs fails, every sentence would fail again (and add a
+    /// delay), so the Mac voice is used for a while before trying again.
+    private var elevenLabsPausedUntilDate: Date?
+    private static let elevenLabsRetryDelayInSeconds: TimeInterval = 10 * 60
+
+    private var shouldUseMacSystemVoice: Bool {
+        if speechVoiceProvider == .macSystemVoice { return true }
+        if APIKeyKeychainStore.readAPIKey(for: .elevenLabs) == nil { return true }
+        if let elevenLabsPausedUntilDate, elevenLabsPausedUntilDate > Date() { return true }
+        return false
+    }
 
     /// The audio player for the current TTS playback. Kept alive so the
     /// audio finishes playing even if the caller doesn't hold a reference.
@@ -42,7 +80,7 @@ final class ElevenLabsTTSClient {
         let player = try AVAudioPlayer(data: speechAudioData)
         self.audioPlayer = player
         player.play()
-        print("🔊 ElevenLabs TTS: playing \(speechAudioData.count / 1024)KB audio")
+        print("🔊 TTS: playing \(speechAudioData.count / 1024)KB audio")
     }
 
     func pausePlayback() {
@@ -53,9 +91,36 @@ final class ElevenLabsTTSClient {
         audioPlayer?.play()
     }
 
-    /// Turns `text` into MP3 audio without playing it, so audio for the next
+    /// Turns `text` into audio without playing it, so audio for the next
     /// part of an explanation can be prepared while the current part plays.
     func synthesizeSpeechAudio(_ text: String) async throws -> Data {
+        if shouldUseMacSystemVoice {
+            return try await synthesizeSpeechAudioWithMacSystemVoice(text)
+        }
+        do {
+            return try await synthesizeSpeechAudioWithElevenLabs(text)
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw error }
+            pauseElevenLabsAfterFailure(error)
+            return try await synthesizeSpeechAudioWithMacSystemVoice(text)
+        }
+    }
+
+    private func synthesizeSpeechAudioWithMacSystemVoice(_ text: String) async throws -> Data {
+        try await MacSystemVoiceAudioRenderer.renderSpeechAudio(text: text, voiceIdentifier: macSystemVoiceIdentifier)
+    }
+
+    private func pauseElevenLabsAfterFailure(_ error: Error) {
+        let isNewFailure = elevenLabsPausedUntilDate == nil
+        elevenLabsPausedUntilDate = Date().addingTimeInterval(Self.elevenLabsRetryDelayInSeconds)
+        print("⚠️ ElevenLabs failed, using the Mac voice for the next 10 minutes: \(error.localizedDescription)")
+        if isNewFailure {
+            onFallbackToMacSystemVoice?(error.localizedDescription)
+        }
+    }
+
+    /// MP3 audio from ElevenLabs.
+    private func synthesizeSpeechAudioWithElevenLabs(_ text: String) async throws -> Data {
         // Read the key on every request so a key saved after launch is picked up.
         let elevenLabsAPIKey = try APIKeyKeychainStore.requireAPIKey(for: .elevenLabs)
 
@@ -98,6 +163,28 @@ final class ElevenLabsTTSClient {
     /// start). Used by step-by-step guidance to move the cursor in sync with
     /// the voice. Returns nil timestamps if ElevenLabs didn't include them.
     func speakTextWithCharacterTimestamps(_ text: String) async throws -> (characterStartTimesInSeconds: [Double]?, audioDurationInSeconds: Double) {
+        // The Mac voice has no character timestamps; step guidance then
+        // estimates timing from each step's position in the text.
+        if shouldUseMacSystemVoice {
+            return try await speakTextWithoutTimestampsUsingMacSystemVoice(text)
+        }
+        do {
+            return try await speakTextWithCharacterTimestampsUsingElevenLabs(text)
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw error }
+            pauseElevenLabsAfterFailure(error)
+            return try await speakTextWithoutTimestampsUsingMacSystemVoice(text)
+        }
+    }
+
+    private func speakTextWithoutTimestampsUsingMacSystemVoice(_ text: String) async throws -> (characterStartTimesInSeconds: [Double]?, audioDurationInSeconds: Double) {
+        let speechAudioData = try await synthesizeSpeechAudioWithMacSystemVoice(text)
+        try Task.checkCancellation()
+        try playSpeechAudio(speechAudioData)
+        return (characterStartTimesInSeconds: nil, audioDurationInSeconds: currentAudioDurationInSeconds)
+    }
+
+    private func speakTextWithCharacterTimestampsUsingElevenLabs(_ text: String) async throws -> (characterStartTimesInSeconds: [Double]?, audioDurationInSeconds: Double) {
         let elevenLabsAPIKey = try APIKeyKeychainStore.requireAPIKey(for: .elevenLabs)
 
         let timestampedSpeechURL = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)/with-timestamps")!
