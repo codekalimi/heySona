@@ -1,173 +1,135 @@
-## Get HeyClicky for Mac and Windows
+# heySona
 
-The official app is **[HeyClicky](https://www.heyclicky.com/)**, an AI buddy for Mac and Windows, made by me and the team.
+heySona is an AI companion that lives in your Mac's menu bar. Hold a shortcut and talk (or type), and it looks at your screen, answers out loud, and can point at things, open apps, set reminders, read your project's code, and remember what matters to you.
 
-- **Mac:** [download HeyClicky for Mac](https://www.heyclicky.com/for-mac) (macOS 14.2 or later)
-- **Windows:** [download HeyClicky for Windows](https://www.heyclicky.com/for-windows) (Windows 10 and 11)
+It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLabs, and AssemblyAI directly with your own API keys.
 
-Those are the only official downloads. Other Windows apps built from this repo are community ports, not made by us.
+![heySona: an AI companion that lives on your Mac](heysona-demo.gif)
 
----
+## Features
 
-Update: April 27, 2026.
+- **Talk or type.** Hold **Control + Option** to talk, or press **⌘⇧Space** to type a question in a Spotlight-style box.
+- **Sees your screen.** Each question includes a screenshot of every connected display, taken only when you ask.
+- **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick. Turn speech off and replies appear as a text bubble next to your cursor.
+- **Points at things.** A small blue cursor flies to the button, menu, or text it's talking about, on any monitor.
+- **Stop anytime.** Press **Esc** while heySona is thinking or speaking to cut it off.
+- **Does things on your Mac.** Open apps, links, and files; find files; play, pause, and skip tracks; change the volume; add reminders and calendar events; run your Shortcuts (you approve each one).
+- **Remembers you.** Tell it about your projects, tools, and preferences, and it remembers them across sessions. Every memory is listed in Settings, where you can delete it.
+- **Knows your project.** Detects the git project of the file open in your front window (Xcode, editors, Terminal), or a folder you pin, and can read its files to help with code. Read-only.
+- **Saves notes.** Say "save that to my notes" to keep an answer in Apple Notes, an Obsidian vault, or a Markdown folder.
+- **Your choice of model.** Claude Opus 5.5 (default, smartest), Sonnet 5.5 (balanced), or Haiku 5.5 (fastest).
 
-Hi there! I'm Farza, the guy that made Clicky.
+## Requirements
 
-The existing codebase remains open source. Tinker with it, make it yours, start a company out of it, do whatever you want I don't mind. But, for all the new stuff I'm hacking on, gonna keep it private. To get the latest version, HeyClicky for Mac or Windows, go to [heyclicky.com](https://www.heyclicky.com/).
+- macOS 14.2 or later
+- A recent version of Xcode (with its license accepted: open Xcode once and click **Agree**)
+- API keys:
+  - [Anthropic](https://console.anthropic.com/settings/keys) (required)
+  - [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) (required for spoken replies)
+  - [AssemblyAI](https://www.assemblyai.com/dashboard) (optional; without it heySona uses Apple's built-in speech recognition)
 
-I also tweeted about this [here](https://x.com/FarzaTV/status/2043402737828962489).
+## Setup
 
-Go crazy with this repo!! It's an MIT license.
+1. Clone the repo and open the project:
 
-# Hi, this is Clicky.
-It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
+   ```bash
+   git clone git@github.com:codekalimi/heySona.git
+   cd heySona
+   open leanring-buddy.xcodeproj
+   ```
 
-Download HeyClicky for free for [Mac](https://www.heyclicky.com/for-mac) or [Windows](https://www.heyclicky.com/for-windows).
+2. In Xcode, select the `leanring-buddy` scheme, choose your team under **Signing & Capabilities**, and press **⌘R**. (The "leanring" spelling is a leftover from the original project and is kept on purpose.)
 
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
+   Build and run from Xcode only. Building with `xcodebuild` from the terminal resets the app's macOS permissions.
 
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
+3. heySona appears in the menu bar (there's no Dock icon). On first launch it asks for each API key and saves it in your macOS Keychain. You can change keys later in **Settings**.
 
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
+4. Grant the permissions the panel asks for:
 
-## Get started with Claude Code
+   | Permission | Why |
+   |---|---|
+   | Microphone | Hearing you while you hold the shortcut |
+   | Accessibility | The global shortcuts, media keys, and detecting your active project |
+   | Screen Recording | Screenshots when you ask a question |
+   | Screen Content | ScreenCaptureKit access |
 
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+   A few more are requested only the first time you use the feature that needs them: Speech Recognition (if you don't use AssemblyAI), Reminders, Calendars (add-only access), and Automation for Apple Notes.
 
-Once you get Claude running, paste this:
+## Using heySona
 
-```
-Hi Claude.
+| Do this | To |
+|---|---|
+| Hold **Control + Option**, speak, release | Ask about your screen |
+| **⌘⇧Space**, type, **Enter** | Ask by typing |
+| **Esc** | Stop the current reply |
+| Click the menu bar icon | Open the panel (model picker, "Type a question", Settings) |
+| Click the gear in the panel | Open Settings |
 
-Clone https://github.com/farzaa/clicky.git into my current directory.
+Things to try:
 
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
+- "What does this error mean?"
+- "Where's the export button?" (watch the cursor)
+- "Open Safari" · "Set the volume to 30" · "Skip this song"
+- "Remind me to call mom tomorrow at 6" · "Add lunch with Sam on Friday at 1"
+- "Remember that I use Neovim" · "Forget that"
+- "What branch am I on?" · "Explain what this file does"
+- "Save that to my notes"
 
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
-```
+### Settings
 
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
+- **API keys:** save, replace, or remove each key (only the last 4 characters are ever shown).
+- **Voice:** speak replies aloud or show them as text, pick an ElevenLabs voice, and preview it.
+- **Mac actions:** turn all actions on or off.
+- **Memory:** turn memory on or off, review every remembered fact, delete one or all.
+- **Project:** turn project awareness on or off, and pin a fallback folder.
+- **Notes:** choose Apple Notes, an Obsidian vault, or a Markdown folder (default `~/Documents/heySona Notes`).
+- **Claude model:** Haiku, Sonnet, or Opus.
 
-## Manual setup
+## Privacy and safety
 
-If you want to do it yourself, here's the deal.
+- **Your keys stay in your Keychain** (service name `heySona`) and are sent only to the service they belong to.
+- **Screenshots are taken only when you ask** a question, and heySona's own windows are left out of them.
+- **Memory is stored only on your Mac**, in `~/Library/Application Support/heySona/long-term-memory.json`.
+- **Claude is told never to follow instructions it reads on your screen**, in web pages, or in file names, and never to save them to memory.
+- **Guardrails on actions:** Shortcuts always need your approval; apps, scripts, and installers are only revealed in Finder, never opened; project files are read-only and nothing outside the project folder can be read; only web links (http/https) are opened.
+- **No analytics or tracking.** heySona sends nothing anywhere except your requests to Anthropic, ElevenLabs, and (if you use it) AssemblyAI.
 
-### Prerequisites
+## How it works
 
-- macOS 14.2+ (for ScreenCaptureKit)
-- Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+heySona is a SwiftUI app with AppKit where it needs it: a menu bar item, a floating control panel, a full-screen transparent overlay for the cursor, and a regular window for Settings.
 
-### 1. Set up the Cloudflare Worker
+1. **Listen.** Push-to-talk audio streams to AssemblyAI over a websocket (or goes to Apple Speech) and becomes a transcript when you release the keys.
+2. **Look.** ScreenCaptureKit captures every display, labeled so Claude knows which screen the cursor is on.
+3. **Think.** The transcript, screenshots, recent conversation, remembered facts, the local time, and any active project are sent to Claude with streaming. Claude can call tools (Mac actions, memory, project files, notes) in a loop before it answers.
+4. **Answer.** The reply is spoken through ElevenLabs (or shown as text). If it contains a `[POINT:x,y:label:screenN]` tag, the cursor flies to that spot.
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
-
-```bash
-cd worker
-npm install
-```
-
-Now add your secrets. Wrangler will prompt you to paste each one:
-
-```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-```
-
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
-
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
-```
-
-Deploy it:
-
-```bash
-npx wrangler deploy
-```
-
-It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
-
-### 2. Run the Worker locally (for development)
-
-If you want to test changes to the Worker without deploying:
-
-```bash
-cd worker
-npx wrangler dev
-```
-
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
-```
-
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
-
-### 3. Update the proxy URLs in the app
-
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
-
-```bash
-grep -r "clicky-proxy" leanring-buddy/
-```
-
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
-
-### 4. Open in Xcode and run
-
-```bash
-open leanring-buddy.xcodeproj
-```
-
-In Xcode:
-1. Select the `leanring-buddy` scheme (yes, the typo is intentional, long story)
-2. Set your signing team under Signing & Capabilities
-3. Hit **Cmd + R** to build and run
-
-The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
-
-### Permissions the app needs
-
-- **Microphone** — for push-to-talk voice capture
-- **Accessibility** — for the global keyboard shortcut (Control + Option)
-- **Screen Recording** — for taking screenshots when you use the hotkey
-- **Screen Content** — for ScreenCaptureKit access
-
-## Architecture
-
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
-
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+For the full technical details, see [`AGENTS.md`](AGENTS.md) (also available as `CLAUDE.md`).
 
 ## Project structure
 
 ```
-leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
+leanring-buddy/                     Swift source
+  leanring_buddyApp.swift             App entry point (menu bar only)
+  CompanionManager.swift              Central state: listen → screenshot → Claude → speak → point
+  ClaudeAPI.swift                     Claude streaming client and tool-use loop
+  ClaudeModelCatalog.swift            Models offered and per-request settings
+  MacActionTools.swift                Mac action tool definitions
+  MacActionExecutor.swift             Runs Mac actions
+  PersonalContextTools.swift          Memory, project, and notes tools
+  LongTermMemoryStore.swift           Remembered facts
+  ActiveProjectContext.swift          Project detection and read-only file access
+  NoteSaver.swift                     Apple Notes, Obsidian, and Markdown notes
+  TypeToAskPanelManager.swift         ⌘⇧Space text box
+  GlobalHotKeyRegistrar.swift         System-wide shortcuts
+  SettingsView.swift                  Settings window
+  APIKeyKeychainStore.swift           API keys in the Keychain
+  ElevenLabsTTSClient.swift           Spoken replies
+  AssemblyAIStreamingTranscriptionProvider.swift   Live speech-to-text
+  OverlayWindow.swift                 The blue cursor overlay
+leanring-buddy.xcodeproj/           Xcode project
+AGENTS.md                           Architecture notes for coding agents (CLAUDE.md links here)
 ```
 
-## Contributing
+## Credits and license
 
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
-
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
+heySona is built on the open-source [Clicky](https://github.com/farzaa/clicky) project by Farza, released under the MIT License. See [`LICENSE`](LICENSE).

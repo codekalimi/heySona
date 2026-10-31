@@ -15,7 +15,7 @@ import AppKit
 import SwiftUI
 
 extension Notification.Name {
-    static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let heySonaDismissPanel = Notification.Name("heySonaDismissPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -30,6 +30,8 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var openSettingsObserver: NSObjectProtocol?
+    private let settingsWindowManager: SettingsWindowManager
 
     private let companionManager: CompanionManager
     private let panelWidth: CGFloat = 320
@@ -37,15 +39,29 @@ final class MenuBarPanelManager: NSObject {
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
+        self.settingsWindowManager = SettingsWindowManager(companionManager: companionManager)
         super.init()
         createStatusItem()
 
         dismissPanelObserver = NotificationCenter.default.addObserver(
-            forName: .clickyDismissPanel,
+            forName: .heySonaDismissPanel,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.hidePanel()
+        }
+
+        // The panel posts this from its gear button. The panel closes first so
+        // it doesn't float over the Settings window.
+        openSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .heySonaOpenSettings,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.hidePanel()
+                self?.settingsWindowManager.showSettingsWindow()
+            }
         }
     }
 
@@ -54,6 +70,9 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = openSettingsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -65,15 +84,15 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeClickyMenuBarIcon()
+        button.image = makeHeySonaMenuBarIcon()
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
-    /// Draws the clicky triangle as a menu bar icon. Uses the same shape
+    /// Draws the heySona triangle as a menu bar icon. Uses the same shape
     /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeClickyMenuBarIcon() -> NSImage {
+    private func makeHeySonaMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()

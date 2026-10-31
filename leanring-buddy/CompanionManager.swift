@@ -8,9 +8,9 @@
 //
 
 import AVFoundation
+import Carbon
 import Combine
 import Foundation
-import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
@@ -65,19 +65,20 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
-    // Response text is now displayed inline on the cursor overlay via
-    // streamingResponseText, so no separate response overlay manager is needed.
+    /// Shows the reply as a text bubble next to the cursor. Only used when
+    /// spoken replies are turned off in Settings, since otherwise the reply
+    /// is heard instead of read.
+    private let responseOverlayManager = CompanionResponseOverlayManager()
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    /// ElevenLabs voice used until the user picks a different one in Settings.
+    static let defaultElevenLabsVoiceId = "kPzsL2i3teMYv0FxEYQ6"
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        return ClaudeAPI(model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        return ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -93,6 +94,18 @@ final class CompanionManager: ObservableObject {
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+
+    // MARK: - Type-To-Ask And Stop Shortcuts
+
+    private let globalHotKeyRegistrar = GlobalHotKeyRegistrar()
+    private let typeToAskPanelManager = TypeToAskPanelManager()
+    /// cmd + shift + space, registered for the app's whole lifetime.
+    private var typeToAskHotKey: RegisteredGlobalHotKey?
+    /// Esc, registered only while a reply is being generated or spoken, so
+    /// Esc keeps working normally in other apps the rest of the time.
+    private var escapeToStopHotKey: RegisteredGlobalHotKey?
+    /// Waits for the current reply to finish, then releases the Esc hot key.
+    private var escapeToStopReleaseTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -108,7 +121,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isOverlayVisible: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// Older saved choices (Sonnet 4.6, Opus 4.6) map to the current model in
+    /// the same family; see ClaudeModelCatalog.
+    @Published var selectedModel: String = ClaudeModelCatalog
+        .modelOption(forSavedModelID: UserDefaults.standard.string(forKey: "selectedClaudeModel"))
+        .modelID
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
@@ -116,16 +133,215 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
+    /// The ElevenLabs voice used for spoken replies. Persisted to UserDefaults.
+    @Published private(set) var selectedElevenLabsVoiceId: String =
+        UserDefaults.standard.string(forKey: "selectedElevenLabsVoiceId") ?? CompanionManager.defaultElevenLabsVoiceId
+
+    func setSelectedElevenLabsVoiceId(_ voiceId: String) {
+        let trimmedVoiceId = voiceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedVoiceId.isEmpty else { return }
+        selectedElevenLabsVoiceId = trimmedVoiceId
+        UserDefaults.standard.set(trimmedVoiceId, forKey: "selectedElevenLabsVoiceId")
+        elevenLabsTTSClient.voiceId = trimmedVoiceId
+    }
+
+    func fetchAvailableElevenLabsVoices() async throws -> [ElevenLabsVoice] {
+        try await elevenLabsTTSClient.fetchAvailableVoices()
+    }
+
+    /// Speaks a short sample with the selected voice so the user can hear
+    /// it before committing to it in Settings.
+    func previewSelectedVoice() async throws {
+        elevenLabsTTSClient.stopPlayback()
+        try await elevenLabsTTSClient.speakText("Hey, I'm Sona. This is how I sound.")
+    }
+
+    /// Runs the Mac actions (open apps, volume, reminders, ...) Claude calls.
+    private let macActionExecutor = MacActionExecutor()
+
+    /// When on, Claude can take actions on the Mac through tools. Persisted
+    /// to UserDefaults; defaults to on.
+    @Published private(set) var isMacActionsEnabled: Bool = UserDefaults.standard.object(forKey: "isMacActionsEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isMacActionsEnabled")
+
+    func setMacActionsEnabled(_ enabled: Bool) {
+        isMacActionsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isMacActionsEnabled")
+    }
+
+    /// Everything that varies per request: the system prompt sections, the
+    /// user message with context appended, the tools, and who runs them.
+    private struct RequestSetup {
+        let systemPrompt: String
+        let userPrompt: String
+        let toolDefinitions: [[String: Any]]
+        let toolCallHandler: ClaudeToolCallHandler
+    }
+
+    /// Builds the request for one question. Called right when the question
+    /// is sent, so project detection sees the app the user is working in.
+    private func makeRequestSetup(transcript: String) -> RequestSetup {
+        var systemPrompt = Self.companionVoiceResponseSystemPrompt
+        var toolDefinitions: [[String: Any]] = []
+        // The local time lets "remind me tomorrow at 3" or "what day is it"
+        // resolve correctly.
+        var userMessageContextLines = ["current local time: \(Self.currentLocalTimeDescription())"]
+
+        if isMacActionsEnabled {
+            systemPrompt += MacActionTools.systemPromptSection
+            toolDefinitions += MacActionTools.toolDefinitionsForClaudeRequest
+        }
+
+        if isLongTermMemoryEnabled {
+            systemPrompt += PersonalContextTools.memorySystemPromptSection(
+                rememberedFactsList: longTermMemoryStore.systemPromptListOfRememberedFacts()
+            )
+            toolDefinitions += PersonalContextTools.memoryToolDefinitions
+        }
+
+        let detectedProject = isProjectAwarenessEnabled
+            ? ActiveProjectContext.detectProject(
+                isFrontWindowDetectionEnabled: true,
+                pinnedProjectFolderPath: pinnedProjectFolderPath
+            )
+            : nil
+        if let detectedProject {
+            systemPrompt += PersonalContextTools.projectSystemPromptSection
+            toolDefinitions += PersonalContextTools.projectToolDefinitions
+            userMessageContextLines.append(ActiveProjectContext.contextDescription(for: detectedProject))
+        }
+
+        systemPrompt += PersonalContextTools.noteSystemPromptSection(defaultNoteDestination: defaultNoteDestination)
+        toolDefinitions += PersonalContextTools.noteToolDefinitions
+
+        let userPrompt = transcript + "\n\n(" + userMessageContextLines.joined(separator: "\n") + ")"
+
+        return RequestSetup(
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            toolDefinitions: toolDefinitions,
+            toolCallHandler: makeToolCallHandler(detectedProject: detectedProject)
+        )
+    }
+
+    /// Sends each tool call to the executor that owns it.
+    private func makeToolCallHandler(detectedProject: DetectedProject?) -> ClaudeToolCallHandler {
+        return { [weak self] toolName, toolInput in
+            guard let self else {
+                return (resultText: "heySona is shutting down.", isError: true)
+            }
+
+            let toolResult: MacActionResult
+            if MacActionToolName(rawValue: toolName) != nil {
+                toolResult = await self.macActionExecutor.execute(toolName: toolName, toolInput: toolInput)
+            } else {
+                toolResult = self.personalContextToolExecutor.execute(
+                    toolName: toolName,
+                    toolInput: toolInput,
+                    detectedProject: detectedProject,
+                    noteSettingsSnapshot: NoteSettingsSnapshot(
+                        defaultNoteDestination: self.defaultNoteDestination,
+                        markdownFolderPath: self.markdownNotesFolderPath,
+                        obsidianVaultFolderPath: self.obsidianVaultFolderPath
+                    )
+                )
+            }
+            return (resultText: toolResult.resultText, isError: toolResult.isError)
+        }
+    }
+
+    // MARK: - Memory, Project, And Notes Settings
+
+    /// Facts remembered across launches. Shown and editable in Settings.
+    let longTermMemoryStore = LongTermMemoryStore()
+    private lazy var personalContextToolExecutor = PersonalContextToolExecutor(longTermMemoryStore: longTermMemoryStore)
+
+    @Published private(set) var isLongTermMemoryEnabled: Bool = UserDefaults.standard.object(forKey: "isLongTermMemoryEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isLongTermMemoryEnabled")
+
+    func setLongTermMemoryEnabled(_ enabled: Bool) {
+        isLongTermMemoryEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLongTermMemoryEnabled")
+    }
+
+    /// When on, heySona detects the project from the front window (or uses
+    /// the pinned folder) and lets Claude read its files.
+    @Published private(set) var isProjectAwarenessEnabled: Bool = UserDefaults.standard.object(forKey: "isProjectAwarenessEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isProjectAwarenessEnabled")
+
+    func setProjectAwarenessEnabled(_ enabled: Bool) {
+        isProjectAwarenessEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isProjectAwarenessEnabled")
+    }
+
+    /// Used when no project is detected from the front window.
+    @Published private(set) var pinnedProjectFolderPath: String? = UserDefaults.standard.string(forKey: "pinnedProjectFolderPath")
+
+    func setPinnedProjectFolderPath(_ folderPath: String?) {
+        pinnedProjectFolderPath = folderPath
+        UserDefaults.standard.set(folderPath, forKey: "pinnedProjectFolderPath")
+    }
+
+    @Published private(set) var defaultNoteDestination: NoteDestination =
+        NoteDestination(rawValue: UserDefaults.standard.string(forKey: "defaultNoteDestination") ?? "") ?? .appleNotes
+
+    func setDefaultNoteDestination(_ noteDestination: NoteDestination) {
+        defaultNoteDestination = noteDestination
+        UserDefaults.standard.set(noteDestination.rawValue, forKey: "defaultNoteDestination")
+    }
+
+    @Published private(set) var markdownNotesFolderPath: String =
+        UserDefaults.standard.string(forKey: "markdownNotesFolderPath") ?? NoteSaver.defaultMarkdownFolderPath
+
+    func setMarkdownNotesFolderPath(_ folderPath: String) {
+        markdownNotesFolderPath = folderPath
+        UserDefaults.standard.set(folderPath, forKey: "markdownNotesFolderPath")
+    }
+
+    @Published private(set) var obsidianVaultFolderPath: String? = UserDefaults.standard.string(forKey: "obsidianVaultFolderPath")
+
+    func setObsidianVaultFolderPath(_ folderPath: String?) {
+        obsidianVaultFolderPath = folderPath
+        UserDefaults.standard.set(folderPath, forKey: "obsidianVaultFolderPath")
+    }
+
+    /// e.g. "Saturday, October 31, 2026 at 3:12 PM (America/Los_Angeles)"
+    private static func currentLocalTimeDescription() -> String {
+        let localTimeFormatter = DateFormatter()
+        localTimeFormatter.dateStyle = .full
+        localTimeFormatter.timeStyle = .short
+        return "\(localTimeFormatter.string(from: Date())) (\(TimeZone.current.identifier))"
+    }
+
+    /// When off, replies are shown as a text bubble instead of spoken aloud.
+    /// Persisted to UserDefaults; defaults to on.
+    @Published private(set) var isSpokenReplyEnabled: Bool = UserDefaults.standard.object(forKey: "isSpokenReplyEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isSpokenReplyEnabled")
+
+    func setSpokenReplyEnabled(_ enabled: Bool) {
+        isSpokenReplyEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isSpokenReplyEnabled")
+        if !enabled {
+            elevenLabsTTSClient.stopPlayback()
+        }
+    }
+
+    /// User preference for whether the heySona cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+    /// Reads the new key first, then the key older builds used, so a saved
+    /// choice survives the rename. Defaults to on.
+    @Published var isCursorOverlayEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "isCursorOverlayEnabled")
+            ?? UserDefaults.standard.object(forKey: "isClickyCursorEnabled")) as? Bool ?? true
 
-    func setClickyCursorEnabled(_ enabled: Bool) {
-        isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+    func setCursorOverlayEnabled(_ enabled: Bool) {
+        isCursorOverlayEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isCursorOverlayEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -146,32 +362,6 @@ final class CompanionManager: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
-    /// Whether the user has submitted their email during onboarding.
-    @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
-
-    /// Submits the user's email to FormSpark and identifies them in PostHog.
-    func submitEmail(_ email: String) {
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedEmail.isEmpty else { return }
-
-        hasSubmittedEmail = true
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
-
-        // Identify user in PostHog
-        PostHogSDK.shared.identify(trimmedEmail, userProperties: [
-            "email": trimmedEmail
-        ])
-
-        // Submit to FormSpark
-        Task {
-            var request = URLRequest(url: URL(string: "https://submit-form.com/RWbGJxmIs")!)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": trimmedEmail])
-            _ = try? await URLSession.shared.data(for: request)
-        }
-    }
-
     func start() {
         refreshAllPermissions()
         print("🔑 heySona start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
@@ -179,6 +369,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        registerTypeToAskHotKeyIfNeeded()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -187,7 +378,7 @@ final class CompanionManager: ObservableObject {
         // still granted, show the cursor overlay immediately. If permissions
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
+        if hasCompletedOnboarding && allPermissionsGranted && isCursorOverlayEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
@@ -200,13 +391,12 @@ final class CompanionManager: ObservableObject {
     /// the overlay so the welcome animation and intro video play.
     func triggerOnboarding() {
         // Post notification so the panel manager can dismiss the panel
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .heySonaDismissPanel, object: nil)
 
         // Mark onboarding as completed so the Start button won't appear
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
 
-        ClickyAnalytics.trackOnboardingStarted()
 
         // Play Besaid theme at 60% volume, fade out after 1m 30s
         startOnboardingMusic()
@@ -221,8 +411,7 @@ final class CompanionManager: ObservableObject {
     /// footer link. Same flow as triggerOnboarding but the cursor overlay
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
+        NotificationCenter.default.post(name: .heySonaDismissPanel, object: nil)
         startOnboardingMusic()
         // Tear down any existing overlays and recreate with isFirstAppearance = true
         overlayWindowManager.hasShownOverlayBefore = false
@@ -306,7 +495,6 @@ final class CompanionManager: ObservableObject {
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
-        let previouslyHadAll = allPermissionsGranted
 
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
@@ -329,24 +517,10 @@ final class CompanionManager: ObservableObject {
             print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         }
 
-        // Track individual permission grants as they happen
-        if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
-        }
-        if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
-        }
-        if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
-        }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
         if !hasScreenContentPermission {
             hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
-        }
-
-        if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
         }
     }
 
@@ -379,10 +553,9 @@ final class CompanionManager: ObservableObject {
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isCursorOverlayEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
@@ -477,38 +650,8 @@ final class CompanionManager: ObservableObject {
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
-            // Cancel any pending transient hide so the overlay stays visible
-            transientHideTask?.cancel()
-            transientHideTask = nil
+            prepareForNewInteraction()
 
-            // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                isOverlayVisible = true
-            }
-
-            // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-
-            // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
-            clearDetectedElementLocation()
-
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
-
-            ClickyAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -520,7 +663,6 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -530,7 +672,6 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -538,6 +679,154 @@ final class CompanionManager: ObservableObject {
             break
         }
     }
+
+    /// Shared setup for every new question, spoken or typed: makes sure the
+    /// cursor overlay is showing and clears whatever the previous reply left.
+    private func prepareForNewInteraction() {
+        // Cancel any pending transient hide so the overlay stays visible
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        // If the cursor is hidden, bring it back transiently for this interaction
+        if !isCursorOverlayEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        // Dismiss the menu bar panel so it doesn't cover the screen
+        NotificationCenter.default.post(name: .heySonaDismissPanel, object: nil)
+
+        // Cancel any in-progress response and TTS from a previous utterance
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        responseOverlayManager.hideOverlay()
+        clearDetectedElementLocation()
+
+        // Dismiss the onboarding prompt if it's showing
+        if showOnboardingPrompt {
+            withAnimation(.easeOut(duration: 0.3)) {
+                onboardingPromptOpacity = 0.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                self.showOnboardingPrompt = false
+                self.onboardingPromptText = ""
+            }
+        }
+    }
+
+    // MARK: - Type To Ask
+
+    private func registerTypeToAskHotKeyIfNeeded() {
+        guard typeToAskHotKey == nil else { return }
+        typeToAskHotKey = globalHotKeyRegistrar.register(
+            carbonKeyCode: kVK_Space,
+            carbonModifierFlags: cmdKey | shiftKey,
+            action: { [weak self] in
+                self?.toggleTypeToAskPanel()
+            }
+        )
+    }
+
+    private func toggleTypeToAskPanel() {
+        if typeToAskPanelManager.isPanelVisible {
+            typeToAskPanelManager.hidePanel()
+        } else {
+            openTypeToAskPanel()
+        }
+    }
+
+    /// Opens the Spotlight-style text box. Also used by the menu bar panel's
+    /// "Type a question" button.
+    func openTypeToAskPanel() {
+        // Same conditions as push-to-talk: setup must be finished and the
+        // onboarding video must not be playing.
+        guard hasCompletedOnboarding && allPermissionsGranted else {
+            print("⚠️ Type to ask: finish setup in the menu bar panel first")
+            return
+        }
+        guard !showOnboardingVideo else { return }
+
+        NotificationCenter.default.post(name: .heySonaDismissPanel, object: nil)
+
+        typeToAskPanelManager.showPanel(onSubmitQuestion: { [weak self] typedQuestion in
+            self?.submitTypedQuestion(typedQuestion)
+        })
+    }
+
+    private func submitTypedQuestion(_ typedQuestion: String) {
+        guard !buddyDictationManager.isDictationInProgress else { return }
+
+        prepareForNewInteraction()
+
+        lastTranscript = typedQuestion
+        print("⌨️ Companion received typed question: \(typedQuestion)")
+        sendTranscriptToClaudeWithScreenshot(transcript: typedQuestion)
+    }
+
+    // MARK: - Stop / Interrupt
+
+    /// Stops the current reply right away: cancels the Claude request if it's
+    /// still running, cuts off speech, and hides the text bubble. Triggered by
+    /// Esc while a reply is in progress.
+    func stopCurrentResponse() {
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        elevenLabsTTSClient.stopPlayback()
+        responseOverlayManager.hideOverlay()
+        clearDetectedElementLocation()
+
+        if voiceState != .listening {
+            voiceState = .idle
+        }
+
+        disarmEscapeToStop()
+        scheduleTransientHideIfNeeded()
+        print("⏹️ Companion response stopped by user")
+    }
+
+    /// Registers Esc as a stop key until the current reply has finished
+    /// generating and speaking. Must be called after `currentResponseTask`
+    /// is assigned so it waits on the right task.
+    private func armEscapeToStopUntilResponseFinishes() {
+        if escapeToStopHotKey == nil {
+            escapeToStopHotKey = globalHotKeyRegistrar.register(
+                carbonKeyCode: kVK_Escape,
+                carbonModifierFlags: 0,
+                action: { [weak self] in
+                    self?.stopCurrentResponse()
+                }
+            )
+        }
+
+        escapeToStopReleaseTask?.cancel()
+        let responseTaskToWaitFor = currentResponseTask
+        escapeToStopReleaseTask = Task { [weak self] in
+            await responseTaskToWaitFor?.value
+
+            // speakText returns as soon as playback starts, so also wait
+            // for the audio itself to finish.
+            while self?.elevenLabsTTSClient.isPlaying == true {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            guard !Task.isCancelled else { return }
+            self?.disarmEscapeToStop()
+        }
+    }
+
+    private func disarmEscapeToStop() {
+        escapeToStopReleaseTask?.cancel()
+        escapeToStopReleaseTask = nil
+        if let escapeToStopHotKey {
+            globalHotKeyRegistrar.unregister(escapeToStopHotKey)
+            self.escapeToStopHotKey = nil
+        }
+    }
+
+    /// Spoken when Claude declines a request and no fallback model answers.
+    private static let declinedRequestSpokenReply = "sorry, i can't help with that one. want to try asking it a different way?"
 
     // MARK: - Companion Prompt
 
@@ -610,15 +899,28 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
-                )
+                let requestSetup = makeRequestSetup(transcript: transcript)
+
+                let fullResponseText: String
+                do {
+                    let streamingResult = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: requestSetup.systemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: requestSetup.userPrompt,
+                        tools: requestSetup.toolDefinitions,
+                        toolCallHandler: requestSetup.toolDefinitions.isEmpty ? nil : requestSetup.toolCallHandler,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                    fullResponseText = streamingResult.text
+                } catch is ClaudeResponseRefusedError {
+                    // A safety decline isn't an outage, so say so plainly instead
+                    // of the "out of credits" error message.
+                    print("⚠️ Claude declined this request")
+                    fullResponseText = Self.declinedRequestSpokenReply
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -675,7 +977,6 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -695,17 +996,21 @@ final class CompanionManager: ObservableObject {
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // With spoken replies off, show the text in a bubble instead.
+                let hasReplyText = !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if hasReplyText && !isSpokenReplyEnabled {
+                    responseOverlayManager.showOverlayAndBeginStreaming()
+                    responseOverlayManager.updateStreamingText(spokenText)
+                    responseOverlayManager.finishStreaming()
+                } else if hasReplyText {
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
@@ -713,7 +1018,6 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
             }
@@ -723,14 +1027,16 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+
+        armEscapeToStopUntilResponseFinishes()
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
+    /// If the cursor is in transient mode (user toggled "Show heySona" off),
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        guard !isCursorOverlayEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
@@ -755,11 +1061,11 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
+    /// Speaks a hardcoded error message using macOS system TTS when a
+    /// request fails (bad or missing key, no credits, network down). Uses
+    /// NSSpeechSynthesizer so it works even when ElevenLabs is down.
     private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
+        let utterance = "I couldn't reach my AI service. Check your API keys and credits in heySona Settings, then try again."
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
@@ -849,13 +1155,12 @@ final class CompanionManager: ObservableObject {
         }
 
         // At 40 seconds into the video, trigger the onboarding demo where
-        // Clicky flies to something interesting on screen and comments on it
+        // the heySona cursor flies to something interesting on screen and comments on it
         let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
         onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
             forTimes: [NSValue(time: demoTriggerTime)],
             queue: .main
         ) { [weak self] in
-            ClickyAnalytics.trackOnboardingDemoTriggered()
             self?.performOnboardingDemoInteraction()
         }
 
@@ -866,7 +1171,6 @@ final class CompanionManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
             self.onboardingVideoOpacity = 0.0
             // Wait for the 2s fade-out animation to complete before tearing down
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {

@@ -30,7 +30,10 @@ struct leanring_buddyApp: App {
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
-    private let companionManager = CompanionManager()
+    /// Lazy so it is created after the API key prompt runs. CompanionManager
+    /// picks its speech-to-text provider when it is created, and it can only
+    /// pick AssemblyAI if that key is already in the Keychain.
+    private lazy var companionManager = CompanionManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,8 +42,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
+        APIKeySetupPrompt.promptForMissingAPIKeysIfNeeded()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
