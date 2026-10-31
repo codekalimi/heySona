@@ -1,0 +1,19 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  '@clerk/shared': false
+  electron: false
+  electron-winstaller: false
+  esbuild: true
+  sharp: true
+  workerd: true
+catalog:
+  dotenv: ^17.2.2
+  zod: ^4.1.13
+  typescript: ^6
+minimumReleaseAgeExclude:
+  - '@cloudflare/workers-types@4.20260520.1'
+  - '@clerk/backend@3.4.13'
+  - '@clerk/hono@0.1.31'
+  - '@clerk/shared@4.13.1'

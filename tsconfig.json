@@ -1,0 +1,3 @@
+{
+  "extends": "@heysona/config/tsconfig.base.json"
+}
