@@ -101,6 +101,15 @@ struct SettingsView: View {
                     )
 
                     settingsToggleRow(
+                        title: "Step-by-step guidance",
+                        detail: "For \"how do I…\" questions, the cursor moves to each step and numbers it as heySona says it.",
+                        isOn: Binding(
+                            get: { companionManager.isStepGuidanceEnabled },
+                            set: { companionManager.setStepGuidanceEnabled($0) }
+                        )
+                    )
+
+                    settingsToggleRow(
                         title: "Show captions",
                         detail: "Shows the spoken reply as text next to your cursor while heySona talks.",
                         isOn: Binding(
