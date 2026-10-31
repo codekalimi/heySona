@@ -13,6 +13,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isSettingsButtonHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -102,6 +103,23 @@ struct CompanionPanelView: View {
             Text(statusText)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+
+            Button(action: {
+                NotificationCenter.default.post(name: .heySonaOpenSettings, object: nil)
+            }) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(isSettingsButtonHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        Circle()
+                            .fill(Color.white.opacity(isSettingsButtonHovered ? 0.14 : 0.08))
+                    )
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in isSettingsButtonHovered = hovering }
+            .pointerCursor()
+            .help("Settings")
 
             Button(action: {
                 NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)

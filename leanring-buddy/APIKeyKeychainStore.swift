@@ -90,6 +90,15 @@ enum APIKeyKeychainStore {
         return apiKey
     }
 
+    static func deleteAPIKey(for apiKeyKind: StoredAPIKeyKind) {
+        let itemIdentityQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainServiceName,
+            kSecAttrAccount as String: apiKeyKind.rawValue
+        ]
+        SecItemDelete(itemIdentityQuery as CFDictionary)
+    }
+
     @discardableResult
     static func saveAPIKey(_ apiKey: String, for apiKeyKind: StoredAPIKeyKind) -> Bool {
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)

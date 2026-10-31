@@ -33,7 +33,9 @@ There is no backend. Each client reads its key from the login Keychain (service 
 | ElevenLabs TTS | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | `elevenlabs-api-key` |
 | AssemblyAI streaming | `streaming.assemblyai.com/v3/ws` (API key in `Authorization` header) | `assemblyai-api-key` |
 
-On launch, `APIKeySetupPrompt` asks for any missing key. AssemblyAI is optional; without it the app falls back to Apple Speech. The ElevenLabs voice ID is a constant in `CompanionManager.swift`.
+On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved, replaced, or removed in the Settings window. AssemblyAI is optional; without it the app falls back to Apple Speech. The speech-to-text provider is picked once at launch, so an AssemblyAI key change applies after relaunch.
+
+**Settings Window**: The gear button in the panel header posts `.heySonaOpenSettings`; `MenuBarPanelManager` hides the panel and `SettingsWindowManager` shows a regular titled window (not part of the panel) so text fields get normal focus. Settings covers API keys, ElevenLabs voice (loaded from the account's voice list, with preview), Claude model, and "Speak replies aloud". With spoken replies off, the reply is shown in the `CompanionResponseOverlayManager` text bubble next to the cursor instead of TTS. Voice ID, model, and spoken-reply preference persist in UserDefaults.
 
 ### Key Architecture Decisions
 
@@ -52,11 +54,11 @@ On launch, `APIKeySetupPrompt` asks for any missing key. AssemblyAI is optional;
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1070 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
-| `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
+| `CompanionResponseOverlay.swift` | ~217 | Cursor-following text bubble for replies. Used when spoken replies are turned off in Settings. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
 | `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
@@ -67,7 +69,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. AssemblyAI is optional;
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
-| `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the ElevenLabs API, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
+| `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the ElevenLabs API, plays back audio via `AVAudioPlayer`, and lists the account's voices for Settings. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
@@ -75,6 +77,8 @@ On launch, `APIKeySetupPrompt` asks for any missing key. AssemblyAI is optional;
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `APIKeyKeychainStore.swift` | ~135 | Reads and saves the Anthropic, AssemblyAI, and ElevenLabs API keys in the macOS Keychain. |
 | `APIKeySetupPrompt.swift` | ~50 | On launch, shows an alert asking for any API key not yet saved in the Keychain. |
+| `SettingsWindowManager.swift` | ~60 | Creates and shows the Settings window (titled `NSWindow` hosting `SettingsView`). |
+| `SettingsView.swift` | ~430 | Settings UI: API keys, ElevenLabs voice picker with preview, Claude model, and spoken-reply toggle. |
 
 ## Build & Run
 

@@ -65,18 +65,20 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
-    // Response text is now displayed inline on the cursor overlay via
-    // streamingResponseText, so no separate response overlay manager is needed.
+    /// Shows the reply as a text bubble next to the cursor. Only used when
+    /// spoken replies are turned off in Settings, since otherwise the reply
+    /// is heard instead of read.
+    private let responseOverlayManager = CompanionResponseOverlayManager()
 
-    /// ElevenLabs voice used for spoken replies.
-    private static let elevenLabsVoiceId = "kPzsL2i3teMYv0FxEYQ6"
+    /// ElevenLabs voice used until the user picks a different one in Settings.
+    static let defaultElevenLabsVoiceId = "kPzsL2i3teMYv0FxEYQ6"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(voiceId: Self.elevenLabsVoiceId)
+        return ElevenLabsTTSClient(voiceId: selectedElevenLabsVoiceId)
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -113,6 +115,43 @@ final class CompanionManager: ObservableObject {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    /// The ElevenLabs voice used for spoken replies. Persisted to UserDefaults.
+    @Published private(set) var selectedElevenLabsVoiceId: String =
+        UserDefaults.standard.string(forKey: "selectedElevenLabsVoiceId") ?? CompanionManager.defaultElevenLabsVoiceId
+
+    func setSelectedElevenLabsVoiceId(_ voiceId: String) {
+        let trimmedVoiceId = voiceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedVoiceId.isEmpty else { return }
+        selectedElevenLabsVoiceId = trimmedVoiceId
+        UserDefaults.standard.set(trimmedVoiceId, forKey: "selectedElevenLabsVoiceId")
+        elevenLabsTTSClient.voiceId = trimmedVoiceId
+    }
+
+    func fetchAvailableElevenLabsVoices() async throws -> [ElevenLabsVoice] {
+        try await elevenLabsTTSClient.fetchAvailableVoices()
+    }
+
+    /// Speaks a short sample with the selected voice so the user can hear
+    /// it before committing to it in Settings.
+    func previewSelectedVoice() async throws {
+        elevenLabsTTSClient.stopPlayback()
+        try await elevenLabsTTSClient.speakText("Hey, I'm Sona. This is how I sound.")
+    }
+
+    /// When off, replies are shown as a text bubble instead of spoken aloud.
+    /// Persisted to UserDefaults; defaults to on.
+    @Published private(set) var isSpokenReplyEnabled: Bool = UserDefaults.standard.object(forKey: "isSpokenReplyEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isSpokenReplyEnabled")
+
+    func setSpokenReplyEnabled(_ enabled: Bool) {
+        isSpokenReplyEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isSpokenReplyEnabled")
+        if !enabled {
+            elevenLabsTTSClient.stopPlayback()
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -493,6 +532,7 @@ final class CompanionManager: ObservableObject {
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
+            responseOverlayManager.hideOverlay()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -698,7 +738,13 @@ final class CompanionManager: ObservableObject {
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // With spoken replies off, show the text in a bubble instead.
+                let hasReplyText = !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if hasReplyText && !isSpokenReplyEnabled {
+                    responseOverlayManager.showOverlayAndBeginStreaming()
+                    responseOverlayManager.updateStreamingText(spokenText)
+                    responseOverlayManager.finishStreaming()
+                } else if hasReplyText {
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing

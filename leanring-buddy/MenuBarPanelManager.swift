@@ -30,6 +30,8 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var openSettingsObserver: NSObjectProtocol?
+    private let settingsWindowManager: SettingsWindowManager
 
     private let companionManager: CompanionManager
     private let panelWidth: CGFloat = 320
@@ -37,6 +39,7 @@ final class MenuBarPanelManager: NSObject {
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
+        self.settingsWindowManager = SettingsWindowManager(companionManager: companionManager)
         super.init()
         createStatusItem()
 
@@ -47,6 +50,19 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+
+        // The panel posts this from its gear button. The panel closes first so
+        // it doesn't float over the Settings window.
+        openSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .heySonaOpenSettings,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.hidePanel()
+                self?.settingsWindowManager.showSettingsWindow()
+            }
+        }
     }
 
     deinit {
@@ -54,6 +70,9 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = openSettingsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
