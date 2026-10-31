@@ -156,9 +156,11 @@ IMPORTANT: Follow these naming rules strictly. Clarity is the top priority.
 
 ## Git Workflow
 
-- Branch naming: `feature/description` or `fix/description`
+- `develop` is the default branch, where finished work is integrated.
+- Start every new feature or bug fix from the latest `develop`, on a `feature/description` or `fix/description` branch, and merge it back into `develop` when it's done.
+- After the work on `develop` has been tested, merge `develop` into `release`. `release` only ever receives tested code from `develop`; never commit to it directly.
 - Commit messages: imperative mood, concise, explain the "why" not the "what"
-- Do not force-push to main
+- Do not force-push to `develop`, `release`, or `main`
 
 ## Self-Update Instructions
 
