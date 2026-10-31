@@ -10,12 +10,11 @@ class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 
-    private let apiURL: URL
+    private let apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
     var model: String
     private let session: URLSession
 
-    init(proxyURL: String, model: String = "claude-sonnet-4-6") {
-        self.apiURL = URL(string: proxyURL)!
+    init(model: String = "claude-sonnet-4-6") {
         self.model = model
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
@@ -36,11 +35,16 @@ class ClaudeAPI {
         warmUpTLSConnectionIfNeeded()
     }
 
-    private func makeAPIRequest() -> URLRequest {
+    private func makeAPIRequest() throws -> URLRequest {
+        // Read the key on every request so a key saved after launch is picked up.
+        let anthropicAPIKey = try APIKeyKeychainStore.requireAPIKey(for: .anthropic)
+
         var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(anthropicAPIKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         return request
     }
 
@@ -107,7 +111,7 @@ class ClaudeAPI {
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
 
-        var request = makeAPIRequest()
+        var request = try makeAPIRequest()
 
         // Build messages array
         var messages: [[String: Any]] = []
@@ -220,7 +224,7 @@ class ClaudeAPI {
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
 
-        var request = makeAPIRequest()
+        var request = try makeAPIRequest()
 
         var messages: [[String: Any]] = []
         for (userPlaceholder, assistantResponse) in conversationHistory {
