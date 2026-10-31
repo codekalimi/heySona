@@ -77,7 +77,13 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1660 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~820 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. Feature methods live in `CompanionManager+*.swift` extensions; stored state stays here. |
+| `CompanionManager+RequestSetup.swift` | ~120 | Builds each Claude request: tools, system prompt sections for enabled features, user-message context, and the tool-call router. |
+| `CompanionManager+Visuals.swift` | ~220 | Screen drawings, captions, step-by-step guidance playback, and starting/stopping visual explanations. |
+| `CompanionManager+Shortcuts.swift` | ~125 | Type-to-ask (cmd+shift+space) and Esc-to-stop hot keys. |
+| `CompanionManager+Permissions.swift` | ~115 | Permission checks, screen content request, permission polling. |
+| `CompanionManager+Onboarding.swift` | ~300 | Onboarding video, music, prompt stream, and the pointing demo. |
+| `CompanionManager+PointTags.swift` | ~70 | `[POINT:...]` tag parsing. |
 | `MenuBarPanelManager.swift` | ~280 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon (a template drawing of the heySona mark: pointer plus two sound waves), manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~720 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Haiku/Sonnet/Opus), permissions UI, onboarding Start button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
@@ -94,7 +100,6 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeModelCatalog.swift` | ~85 | Claude models offered in the pickers, default model, effort level, `max_tokens`, which models support server-side refusal fallback, and saved-choice migration. |
 | `ClaudeAPI.swift` | ~490 | Claude vision API client with streaming (SSE) and non-streaming modes. Streaming mode runs the client tool-use loop for Mac actions. TLS warmup optimization, image MIME detection, conversation history support. |
-| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the ElevenLabs API, plays back audio via `AVAudioPlayer`, and lists the account's voices for Settings. Exposes `isPlaying` for transient cursor scheduling, and a `/with-timestamps` variant that returns per-character start times for step-by-step guidance. |
 | `MacActionTools.swift` | ~140 | Mac action tool names, descriptions, JSON input schemas, and the system prompt section that explains them to Claude. |
 | `MacActionExecutor.swift` | ~550 | Runs Mac action tool calls with input validation: apps, links, file search/open, media keys, volume, reminders, calendar events, Shortcuts (with approval). |
@@ -110,7 +115,6 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `VisualExplanationSession.swift` | ~430 | One visual explanation: `[VISUAL]` tag parsing, streaming scene generation from Claude (JSON Lines), step-by-step narration synced with the window, and the scene authoring prompt. |
 | `VisualExplainerPanelManager.swift` | ~255 | Floating explainer window with a WKWebView; loads the bundled renderer page, queues commands until it's ready, sends scenes/steps (validated as JSON objects), relays page messages. |
 | `VisualExplainer.bundle/` | — | Renderer page (`visual-explainer.html`), renderer (`visual-explainer.js`, ~1,400 lines, scene format documented at top), `three.min.js` + license, and the rocket engine demo scene. |
-| `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
