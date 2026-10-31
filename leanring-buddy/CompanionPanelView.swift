@@ -291,6 +291,14 @@ struct CompanionPanelView: View {
                 }
                 Spacer(minLength: 0)
                 Menu {
+                    Button { companionManager.setSelectedModel(ClaudeModelCatalog.autoModelChoiceID) } label: {
+                        if companionManager.selectedModel == ClaudeModelCatalog.autoModelChoiceID {
+                            Label("Auto", systemImage: "checkmark")
+                        } else {
+                            Text("Auto")
+                        }
+                    }
+                    Divider()
                     ForEach(ClaudeModelCatalog.allModelOptions) { modelOption in
                         Button { companionManager.setSelectedModel(modelOption.modelID) } label: {
                             if companionManager.selectedModel == modelOption.modelID {
@@ -301,7 +309,9 @@ struct CompanionPanelView: View {
                         }
                     }
                 } label: {
-                    Text(ClaudeModelCatalog.modelOption(forModelID: companionManager.selectedModel)?.pickerLabel ?? "Model")
+                    Text(companionManager.selectedModel == ClaudeModelCatalog.autoModelChoiceID
+                         ? "Auto"
+                         : (ClaudeModelCatalog.modelOption(forModelID: companionManager.selectedModel)?.pickerLabel ?? "Model"))
                         .font(.system(size: 12))
                 }
                 .menuStyle(.borderlessButton)

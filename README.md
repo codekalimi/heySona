@@ -21,7 +21,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 - **Remembers you.** Tell it about your projects, tools, and preferences, and it remembers them across sessions. Every memory is listed in Settings, where you can delete it.
 - **Knows your project.** Detects the git project of the file open in your front window (Xcode, editors, Terminal), or a folder you pin, and can read its files to help with code. Read-only.
 - **Saves notes.** Say "save that to my notes" to keep an answer in Apple Notes, an Obsidian vault, or a Markdown folder.
-- **Your choice of model.** Claude Opus 5.5 (default, smartest), Sonnet 5.5 (balanced), or Haiku 5.5 (fastest).
+- **Your choice of model.** Claude Opus 5.5 (default, smartest), Sonnet 5.5 (balanced), Haiku 5.5 (fastest), or **Auto**, which picks the cheapest model that fits each question (Haiku for plain questions, Sonnet for anything on your screen, Opus for deep and visual explanations).
 
 ## Requirements
 
@@ -90,7 +90,7 @@ Things to try:
 - **Memory:** turn memory on or off, review every remembered fact, delete one or all.
 - **Project:** turn project awareness on or off, and pin a fallback folder.
 - **Notes:** choose Apple Notes, an Obsidian vault, or a Markdown folder (default `~/Documents/heySona Notes`).
-- **Claude model:** Haiku, Sonnet, or Opus.
+- **Claude model:** Auto, Haiku, Sonnet, or Opus (Auto shows which model answered the last question).
 
 ## Privacy and safety
 
