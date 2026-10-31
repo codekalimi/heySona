@@ -192,6 +192,10 @@ final class CompanionManager: ObservableObject {
             systemPrompt += ScreenDrawingTagParser.systemPromptSection
         }
 
+        if isStepGuidanceEnabled {
+            systemPrompt += StepGuidanceParser.systemPromptSection
+        }
+
         if isMacActionsEnabled {
             systemPrompt += MacActionTools.systemPromptSection
             toolDefinitions += MacActionTools.toolDefinitionsForClaudeRequest
@@ -339,6 +343,125 @@ final class CompanionManager: ObservableObject {
         if !enabled {
             clearScreenDrawings()
         }
+    }
+
+    // MARK: - Step-By-Step Guidance
+
+    /// When on, "how do I…" answers walk through steps on screen in sync
+    /// with the voice.
+    @Published private(set) var isStepGuidanceEnabled: Bool = UserDefaults.standard.object(forKey: "isStepGuidanceEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isStepGuidanceEnabled")
+
+    func setStepGuidanceEnabled(_ enabled: Bool) {
+        isStepGuidanceEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isStepGuidanceEnabled")
+    }
+
+    /// True while a step-by-step reply is playing. The cursor overlay reads
+    /// this to stay on each step instead of flying back between steps.
+    @Published private(set) var isGuidingThroughSteps: Bool = false
+    private var stepGuidanceTask: Task<Void, Never>?
+
+    /// Plays the reply and shows each step (numbered circle + cursor flight)
+    /// as the voice reaches it. With spoken replies off, the text is shown
+    /// and the steps advance on a reading-pace timer instead.
+    private func presentReplyWithStepGuidance(spokenText: String, guidanceSteps: [GuidanceStep]) async {
+        var stepActivationTimesInSeconds: [Double]
+
+        if isSpokenReplyEnabled {
+            do {
+                let timestampedPlayback: (characterStartTimesInSeconds: [Double]?, audioDurationInSeconds: Double)
+                do {
+                    timestampedPlayback = try await elevenLabsTTSClient.speakTextWithCharacterTimestamps(spokenText)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Timestamps are a nice-to-have: fall back to plain speech
+                    // and estimate step timing from the text.
+                    print("⚠️ Timestamped speech failed, estimating step timing: \(error)")
+                    try await elevenLabsTTSClient.speakText(spokenText)
+                    timestampedPlayback = (nil, elevenLabsTTSClient.currentAudioDurationInSeconds)
+                }
+
+                voiceState = .responding
+                if isLiveCaptionsEnabled {
+                    showCaptionUntilSpeechEnds(captionText: spokenText)
+                }
+                stepActivationTimesInSeconds = StepGuidanceParser.activationTimesInSeconds(
+                    for: guidanceSteps,
+                    spokenText: spokenText,
+                    characterStartTimesInSeconds: timestampedPlayback.characterStartTimesInSeconds,
+                    audioDurationInSeconds: timestampedPlayback.audioDurationInSeconds
+                )
+            } catch {
+                print("⚠️ ElevenLabs TTS error: \(error)")
+                speakCreditsErrorFallback()
+                return
+            }
+        } else {
+            responseOverlayManager.showOverlayAndBeginStreaming()
+            responseOverlayManager.updateStreamingText(spokenText)
+            responseOverlayManager.finishStreaming(afterDelayInSeconds: 6 + Double(guidanceSteps.count) * 3)
+            let secondsBetweenStepsWhenReading = 3.0
+            stepActivationTimesInSeconds = guidanceSteps.indices.map { stepIndex in
+                0.4 + Double(stepIndex) * secondsBetweenStepsWhenReading
+            }
+        }
+
+        print("🪜 Guiding through \(guidanceSteps.count) step(s) at \(stepActivationTimesInSeconds.map { String(format: "%.1fs", $0) })")
+        isGuidingThroughSteps = true
+        stepGuidanceTask?.cancel()
+        let playbackStartDate = Date()
+
+        stepGuidanceTask = Task { [weak self] in
+            for (guidanceStep, activationTimeInSeconds) in zip(guidanceSteps, stepActivationTimesInSeconds) {
+                let secondsUntilActivation = activationTimeInSeconds - Date().timeIntervalSince(playbackStartDate)
+                if secondsUntilActivation > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(secondsUntilActivation * 1_000_000_000))
+                }
+                guard !Task.isCancelled, let self else { return }
+                self.showGuidanceStep(guidanceStep)
+            }
+
+            // Keep the cursor on the last step until the voice finishes.
+            while self?.elevenLabsTTSClient.isPlaying == true {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.isGuidingThroughSteps = false
+            // Step circles are added after the reply starts, so the fade-out
+            // is scheduled here, once the last step has been shown.
+            self?.scheduleScreenDrawingsFadeOut()
+        }
+    }
+
+    /// Circles the step's target with its number and flies the cursor there.
+    private func showGuidanceStep(_ guidanceStep: GuidanceStep) {
+        let stepLabelText = guidanceStep.label.map { "\(guidanceStep.stepNumber) · \($0)" } ?? "\(guidanceStep.stepNumber)"
+
+        screenDrawingsFadeOutTask?.cancel()
+        screenDrawings.append(ScreenDrawing(
+            shape: .circle(center: guidanceStep.displayLocalTargetPoint, radius: 22),
+            label: stepLabelText,
+            displayFrame: guidanceStep.displayFrame,
+            drawingOrder: 0
+        ))
+
+        // The bubble text and display frame must be set before the location,
+        // since the overlay starts the flight when the location changes.
+        detectedElementBubbleText = stepLabelText
+        detectedElementDisplayFrame = guidanceStep.displayFrame
+        detectedElementScreenLocation = guidanceStep.globalScreenTargetPoint
+        print("🪜 Step \(guidanceStep.stepNumber): \(guidanceStep.label ?? "unlabeled")")
+    }
+
+    private func stopStepGuidance() {
+        stepGuidanceTask?.cancel()
+        stepGuidanceTask = nil
+        isGuidingThroughSteps = false
     }
 
     /// When on, the spoken reply is also shown as text next to the cursor.
@@ -794,6 +917,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
+        stopStepGuidance()
         clearScreenDrawings()
         clearDetectedElementLocation()
 
@@ -868,6 +992,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
+        stopStepGuidance()
         clearScreenDrawings()
         clearDetectedElementLocation()
 
@@ -1032,13 +1157,21 @@ final class CompanionManager: ObservableObject {
 
                 // Parse the [POINT:...] tag from Claude's response
                 let parseResult = Self.parsePointingCoordinates(from: drawingExtraction.textWithoutDrawingTags)
-                let spokenText = parseResult.spokenText
+
+                // Step tags sit inside the text, so they're removed after the
+                // POINT tag. Their offsets then refer to the exact text spoken.
+                let stepExtraction = StepGuidanceParser.extractSteps(
+                    from: parseResult.spokenText,
+                    screenCaptures: screenCaptures
+                )
+                let guidanceSteps = isStepGuidanceEnabled ? stepExtraction.steps : []
+                let spokenText = stepExtraction.spokenTextWithoutStepTags
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
+                let hasPointCoordinate = parseResult.coordinate != nil && guidanceSteps.isEmpty
                 if hasPointCoordinate {
                     voiceState = .idle
                 }
@@ -1053,7 +1186,8 @@ final class CompanionManager: ObservableObject {
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
 
-                if let pointCoordinate = parseResult.coordinate,
+                if guidanceSteps.isEmpty,
+                   let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
                     // Claude's coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
@@ -1107,7 +1241,9 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 // With spoken replies off, show the text in a bubble instead.
                 let hasReplyText = !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                if hasReplyText && !isSpokenReplyEnabled {
+                if hasReplyText && !guidanceSteps.isEmpty {
+                    await presentReplyWithStepGuidance(spokenText: spokenText, guidanceSteps: guidanceSteps)
+                } else if hasReplyText && !isSpokenReplyEnabled {
                     responseOverlayManager.showOverlayAndBeginStreaming()
                     responseOverlayManager.updateStreamingText(spokenText)
                     responseOverlayManager.finishStreaming()

@@ -161,6 +161,12 @@ struct BlueCursorView: View {
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
     @State private var navigationBubbleScale: CGFloat = 1.0
 
+    /// Increases with every new flight to a target. Delayed callbacks from an
+    /// earlier flight compare against it and do nothing if a newer flight has
+    /// started (e.g. step 2 of a guided answer arriving while step 1's
+    /// "fly back" timer is still pending).
+    @State private var navigationFlightNumber: Int = 0
+
     /// True when the buddy is flying BACK to the cursor after pointing.
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
@@ -487,10 +493,13 @@ struct BlueCursorView: View {
         // Enter navigation mode — stop cursor following
         buddyNavigationMode = .navigatingToTarget
         isReturningToCursor = false
+        navigationFlightNumber += 1
+        let thisFlightNumber = navigationFlightNumber
 
         animateBezierFlightArc(to: clampedTarget) {
-            guard self.buddyNavigationMode == .navigatingToTarget else { return }
-            self.startPointingAtElement()
+            guard self.buddyNavigationMode == .navigatingToTarget,
+                  thisFlightNumber == self.navigationFlightNumber else { return }
+            self.startPointingAtElement(flightNumber: thisFlightNumber)
         }
     }
 
@@ -575,7 +584,7 @@ struct BlueCursorView: View {
 
     /// Transitions to pointing mode — shows a speech bubble with a bouncy
     /// scale-in entrance and variable-speed character streaming.
-    private func startPointingAtElement() {
+    private func startPointingAtElement(flightNumber: Int) {
         buddyNavigationMode = .pointingAtTarget
 
         // Rotate back to default pointer angle now that we've arrived
@@ -593,16 +602,33 @@ struct BlueCursorView: View {
             ?? navigationPointerPhrases.randomElement()
             ?? "right here!"
 
-        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
+        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0, flightNumber: flightNumber) {
             // All characters streamed — hold for 3 seconds, then fly back
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                    self.startFlyingBackToCursor()
-                }
+                self.flyBackToCursorWhenGuidanceAllows(flightNumber: flightNumber)
             }
+        }
+    }
+
+    /// Flies back to the cursor once this flight is still the current one and
+    /// no step-by-step guidance is playing. During guidance the buddy stays on
+    /// the current step until the next step's flight replaces it.
+    private func flyBackToCursorWhenGuidanceAllows(flightNumber: Int) {
+        guard buddyNavigationMode == .pointingAtTarget,
+              flightNumber == navigationFlightNumber else { return }
+
+        if companionManager.isGuidingThroughSteps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.flyBackToCursorWhenGuidanceAllows(flightNumber: flightNumber)
+            }
+            return
+        }
+
+        navigationBubbleOpacity = 0.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard self.buddyNavigationMode == .pointingAtTarget,
+                  flightNumber == self.navigationFlightNumber else { return }
+            self.startFlyingBackToCursor()
         }
     }
 
@@ -611,9 +637,12 @@ struct BlueCursorView: View {
     private func streamNavigationBubbleCharacter(
         phrase: String,
         characterIndex: Int,
+        flightNumber: Int,
         onComplete: @escaping () -> Void
     ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
+        // Stop if a newer flight took over, so its bubble isn't mixed with this one.
+        guard buddyNavigationMode == .pointingAtTarget,
+              flightNumber == navigationFlightNumber else { return }
         guard characterIndex < phrase.count else {
             onComplete()
             return
@@ -632,6 +661,7 @@ struct BlueCursorView: View {
             self.streamNavigationBubbleCharacter(
                 phrase: phrase,
                 characterIndex: characterIndex + 1,
+                flightNumber: flightNumber,
                 onComplete: onComplete
             )
         }
