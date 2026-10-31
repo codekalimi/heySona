@@ -11,7 +11,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 
 ## Features
 
-- **Talk or type.** Hold **Control + Option** to talk, or press **⌘⇧Space** to type a question in a Spotlight-style box.
+- **Talk or type.** Hold **Control + Option** to talk, or double-tap **Control** to type a question in a Spotlight-style box.
 - **Sees your screen.** Each question includes a screenshot of every connected display, taken only when you ask.
 - **Answers out loud.** Replies are spoken with an ElevenLabs voice you pick, or a free built-in Mac voice. Turn speech off and replies appear as a text bubble next to your cursor.
 - **Points at things.** A small blue cursor flies to the button, menu, or text it's talking about, on any monitor.
@@ -63,7 +63,7 @@ It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLab
 | Do this | To |
 |---|---|
 | Hold **Control + Option**, speak, release | Ask about your screen |
-| **⌘⇧Space**, type, **Enter** | Ask by typing |
+| Double-tap **Control**, type, **Enter** | Ask by typing |
 | **Esc** | Stop the current reply |
 | Click the menu bar icon | Open the panel (model picker, "Type a question", Settings) |
 | Click the gear in the panel | Open Settings |
@@ -123,7 +123,7 @@ leanring-buddy/                     Swift source
   LongTermMemoryStore.swift           Remembered facts
   ActiveProjectContext.swift          Project detection and read-only file access
   NoteSaver.swift                     Apple Notes, Obsidian, and Markdown notes
-  TypeToAskPanelManager.swift         ⌘⇧Space text box
+  TypeToAskPanelManager.swift         Double-tap Control text box
   GlobalHotKeyRegistrar.swift         System-wide shortcuts
   SettingsView.swift                  Settings window
   APIKeyKeychainStore.swift           API keys in the Keychain
