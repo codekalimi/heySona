@@ -144,3 +144,5 @@ swift scripts/generate-brand-assets.swift
 ## Credits and license
 
 heySona is built on the open-source [Clicky](https://github.com/farzaa/clicky) project by Farza, released under the MIT License. See [`LICENSE`](LICENSE).
+
+The visual explainer bundles [three.js](https://github.com/mrdoob/three.js) r160 and [KaTeX](https://github.com/KaTeX/KaTeX) 0.18.11, both MIT-licensed (license files are next to them in `leanring-buddy/VisualExplainer.bundle/`).

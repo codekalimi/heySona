@@ -11,6 +11,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>heySona Explainer</title>
+  <!-- KaTeX 0.18.11 (MIT) typesets equations; fonts load from katex/fonts. -->
+  <link rel="stylesheet" href="katex/katex.min.css">
   <style>
     :root {
       --background: #101211;
@@ -242,6 +244,33 @@
       margin-bottom: 3px;
     }
 
+    .scene-card-math { color: #ffffff; font-size: 15px; margin: 4px 0 2px; overflow-x: auto; overflow-y: hidden; }
+    .scene-card-math .katex-display { margin: 0.3em 0; }
+    .scene-card.is-updating .scene-card-content { animation: card-content-change 0.45s ease; }
+    @keyframes card-content-change { from { opacity: 0.15; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .scene-label-text .katex { font-size: 1.05em; }
+
+    #slider-panel {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      width: 230px;
+      padding: 10px 12px 4px;
+      background: rgba(23, 25, 24, 0.92);
+      border: 1px solid rgba(51, 128, 255, 0.45);
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      cursor: default;
+      z-index: 3;
+    }
+    #slider-panel[hidden] { display: none; }
+    .slider-hint { font-size: 10.5px; color: var(--text-tertiary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .slider-row { margin-bottom: 9px; }
+    .slider-row-header { display: flex; justify-content: space-between; font-size: 12px; color: #eceeed; margin-bottom: 4px; }
+    .slider-value { font-family: "SF Mono", Menlo, monospace; color: #7cc4ff; }
+    .slider-row input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    #quiz-button.is-attention { box-shadow: 0 0 0 3px rgba(51, 128, 255, 0.35); }
+
     .scene-card.is-code .scene-card-body {
       font-family: "SF Mono", Menlo, monospace;
       font-size: 11.5px;
@@ -370,6 +399,9 @@
       <div id="label-layer"></div>
       <div id="loading-message">Preparing the explanation…</div>
 
+      <!-- Live sliders: drag to change a value and watch the scene react. -->
+      <div id="slider-panel" hidden></div>
+
       <!-- Quiz: a few multiple-choice questions after the explanation. -->
       <div class="stage-panel" id="quiz-panel" hidden>
         <div class="stage-panel-header">
@@ -415,6 +447,7 @@
   </div>
 
   <script src="three.min.js"></script>
+  <script src="katex/katex.min.js"></script>
   <script src="visual-explainer.js"></script>
 </body>
 </html>
