@@ -20,6 +20,8 @@
 	<string>heySona adds reminders when you ask it to.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>heySona adds calendar events when you ask it to.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>heySona saves notes to Apple Notes when you ask it to.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>heySona uses speech recognition to transcribe your voice when you talk to it</string>
 </dict>

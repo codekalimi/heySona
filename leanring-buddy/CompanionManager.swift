@@ -167,15 +167,142 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "isMacActionsEnabled")
     }
 
-    /// Bridges Claude's tool calls to `MacActionExecutor`.
-    private func makeMacActionToolCallHandler() -> ClaudeToolCallHandler {
+    /// Everything that varies per request: the system prompt sections, the
+    /// user message with context appended, the tools, and who runs them.
+    private struct RequestSetup {
+        let systemPrompt: String
+        let userPrompt: String
+        let toolDefinitions: [[String: Any]]
+        let toolCallHandler: ClaudeToolCallHandler
+    }
+
+    /// Builds the request for one question. Called right when the question
+    /// is sent, so project detection sees the app the user is working in.
+    private func makeRequestSetup(transcript: String) -> RequestSetup {
+        var systemPrompt = Self.companionVoiceResponseSystemPrompt
+        var toolDefinitions: [[String: Any]] = []
+        // The local time lets "remind me tomorrow at 3" or "what day is it"
+        // resolve correctly.
+        var userMessageContextLines = ["current local time: \(Self.currentLocalTimeDescription())"]
+
+        if isMacActionsEnabled {
+            systemPrompt += MacActionTools.systemPromptSection
+            toolDefinitions += MacActionTools.toolDefinitionsForClaudeRequest
+        }
+
+        if isLongTermMemoryEnabled {
+            systemPrompt += PersonalContextTools.memorySystemPromptSection(
+                rememberedFactsList: longTermMemoryStore.systemPromptListOfRememberedFacts()
+            )
+            toolDefinitions += PersonalContextTools.memoryToolDefinitions
+        }
+
+        let detectedProject = isProjectAwarenessEnabled
+            ? ActiveProjectContext.detectProject(
+                isFrontWindowDetectionEnabled: true,
+                pinnedProjectFolderPath: pinnedProjectFolderPath
+            )
+            : nil
+        if let detectedProject {
+            systemPrompt += PersonalContextTools.projectSystemPromptSection
+            toolDefinitions += PersonalContextTools.projectToolDefinitions
+            userMessageContextLines.append(ActiveProjectContext.contextDescription(for: detectedProject))
+        }
+
+        systemPrompt += PersonalContextTools.noteSystemPromptSection(defaultNoteDestination: defaultNoteDestination)
+        toolDefinitions += PersonalContextTools.noteToolDefinitions
+
+        let userPrompt = transcript + "\n\n(" + userMessageContextLines.joined(separator: "\n") + ")"
+
+        return RequestSetup(
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            toolDefinitions: toolDefinitions,
+            toolCallHandler: makeToolCallHandler(detectedProject: detectedProject)
+        )
+    }
+
+    /// Sends each tool call to the executor that owns it.
+    private func makeToolCallHandler(detectedProject: DetectedProject?) -> ClaudeToolCallHandler {
         return { [weak self] toolName, toolInput in
             guard let self else {
                 return (resultText: "heySona is shutting down.", isError: true)
             }
-            let macActionResult = await self.macActionExecutor.execute(toolName: toolName, toolInput: toolInput)
-            return (resultText: macActionResult.resultText, isError: macActionResult.isError)
+
+            let toolResult: MacActionResult
+            if MacActionToolName(rawValue: toolName) != nil {
+                toolResult = await self.macActionExecutor.execute(toolName: toolName, toolInput: toolInput)
+            } else {
+                toolResult = self.personalContextToolExecutor.execute(
+                    toolName: toolName,
+                    toolInput: toolInput,
+                    detectedProject: detectedProject,
+                    noteSettingsSnapshot: NoteSettingsSnapshot(
+                        defaultNoteDestination: self.defaultNoteDestination,
+                        markdownFolderPath: self.markdownNotesFolderPath,
+                        obsidianVaultFolderPath: self.obsidianVaultFolderPath
+                    )
+                )
+            }
+            return (resultText: toolResult.resultText, isError: toolResult.isError)
         }
+    }
+
+    // MARK: - Memory, Project, And Notes Settings
+
+    /// Facts remembered across launches. Shown and editable in Settings.
+    let longTermMemoryStore = LongTermMemoryStore()
+    private lazy var personalContextToolExecutor = PersonalContextToolExecutor(longTermMemoryStore: longTermMemoryStore)
+
+    @Published private(set) var isLongTermMemoryEnabled: Bool = UserDefaults.standard.object(forKey: "isLongTermMemoryEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isLongTermMemoryEnabled")
+
+    func setLongTermMemoryEnabled(_ enabled: Bool) {
+        isLongTermMemoryEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLongTermMemoryEnabled")
+    }
+
+    /// When on, heySona detects the project from the front window (or uses
+    /// the pinned folder) and lets Claude read its files.
+    @Published private(set) var isProjectAwarenessEnabled: Bool = UserDefaults.standard.object(forKey: "isProjectAwarenessEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isProjectAwarenessEnabled")
+
+    func setProjectAwarenessEnabled(_ enabled: Bool) {
+        isProjectAwarenessEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isProjectAwarenessEnabled")
+    }
+
+    /// Used when no project is detected from the front window.
+    @Published private(set) var pinnedProjectFolderPath: String? = UserDefaults.standard.string(forKey: "pinnedProjectFolderPath")
+
+    func setPinnedProjectFolderPath(_ folderPath: String?) {
+        pinnedProjectFolderPath = folderPath
+        UserDefaults.standard.set(folderPath, forKey: "pinnedProjectFolderPath")
+    }
+
+    @Published private(set) var defaultNoteDestination: NoteDestination =
+        NoteDestination(rawValue: UserDefaults.standard.string(forKey: "defaultNoteDestination") ?? "") ?? .appleNotes
+
+    func setDefaultNoteDestination(_ noteDestination: NoteDestination) {
+        defaultNoteDestination = noteDestination
+        UserDefaults.standard.set(noteDestination.rawValue, forKey: "defaultNoteDestination")
+    }
+
+    @Published private(set) var markdownNotesFolderPath: String =
+        UserDefaults.standard.string(forKey: "markdownNotesFolderPath") ?? NoteSaver.defaultMarkdownFolderPath
+
+    func setMarkdownNotesFolderPath(_ folderPath: String) {
+        markdownNotesFolderPath = folderPath
+        UserDefaults.standard.set(folderPath, forKey: "markdownNotesFolderPath")
+    }
+
+    @Published private(set) var obsidianVaultFolderPath: String? = UserDefaults.standard.string(forKey: "obsidianVaultFolderPath")
+
+    func setObsidianVaultFolderPath(_ folderPath: String?) {
+        obsidianVaultFolderPath = folderPath
+        UserDefaults.standard.set(folderPath, forKey: "obsidianVaultFolderPath")
     }
 
     /// e.g. "Saturday, October 31, 2026 at 3:12 PM (America/Los_Angeles)"
@@ -812,23 +939,15 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                // With Mac actions on, Claude gets the action tools, a system
-                // prompt section about them, and the local time so requests
-                // like "remind me tomorrow at 3" resolve to the right date.
-                let systemPromptForThisResponse = isMacActionsEnabled
-                    ? Self.companionVoiceResponseSystemPrompt + MacActionTools.systemPromptSection
-                    : Self.companionVoiceResponseSystemPrompt
-                let userPromptForThisResponse = isMacActionsEnabled
-                    ? transcript + "\n\n(current local time: \(Self.currentLocalTimeDescription()))"
-                    : transcript
+                let requestSetup = makeRequestSetup(transcript: transcript)
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: systemPromptForThisResponse,
+                    systemPrompt: requestSetup.systemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: userPromptForThisResponse,
-                    tools: isMacActionsEnabled ? MacActionTools.toolDefinitionsForClaudeRequest : [],
-                    toolCallHandler: isMacActionsEnabled ? makeMacActionToolCallHandler() : nil,
+                    userPrompt: requestSetup.userPrompt,
+                    tools: requestSetup.toolDefinitions,
+                    toolCallHandler: requestSetup.toolDefinitions.isEmpty ? nil : requestSetup.toolCallHandler,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }

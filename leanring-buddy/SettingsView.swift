@@ -17,6 +17,12 @@ struct SettingsView: View {
                 apiKeysSection
                 voiceSection
                 macActionsSection
+                LongTermMemorySettingsSection(
+                    companionManager: companionManager,
+                    longTermMemoryStore: companionManager.longTermMemoryStore
+                )
+                ProjectAwarenessSettingsSection(companionManager: companionManager)
+                NotesSettingsSection(companionManager: companionManager)
                 modelSection
             }
             .padding(24)
@@ -164,13 +170,13 @@ struct SettingsView: View {
 
 // MARK: - Shared Layout Helpers
 
-private func settingsSectionTitle(_ title: String) -> some View {
+func settingsSectionTitle(_ title: String) -> some View {
     Text(title)
         .font(.system(size: 10, weight: .semibold, design: .rounded))
         .foregroundColor(DS.Colors.textTertiary)
 }
 
-private func settingsCard<CardContent: View>(@ViewBuilder content: () -> CardContent) -> some View {
+func settingsCard<CardContent: View>(@ViewBuilder content: () -> CardContent) -> some View {
     content()
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -185,7 +191,7 @@ private func settingsCard<CardContent: View>(@ViewBuilder content: () -> CardCon
 }
 
 /// Small capsule button used for Save / Remove / Preview actions.
-private struct SettingsCapsuleButton: View {
+struct SettingsCapsuleButton: View {
     let title: String
     let isProminent: Bool
     let isEnabled: Bool
