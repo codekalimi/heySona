@@ -188,6 +188,34 @@ final class CompanionManager: ObservableObject {
         elevenLabsTTSClient.voiceId = trimmedVoiceId
     }
 
+    /// AssemblyAI (cloud) or WhisperKit (on-device, free). Persisted.
+    @Published private(set) var speechToTextChoice: SpeechToTextChoice =
+        SpeechToTextChoice.savedChoice ?? .assemblyAI
+
+    func setSpeechToTextChoice(_ choice: SpeechToTextChoice) {
+        speechToTextChoice = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: SpeechToTextChoice.userDefaultsKey)
+        buddyDictationManager.reloadTranscriptionProvider()
+        if choice == .whisperKit {
+            WhisperKitSpeechModelManager.shared.prepare(selectedWhisperKitSpeechModel)
+        } else {
+            // Free the model's memory while it isn't used.
+            WhisperKitSpeechModelManager.shared.unload()
+        }
+    }
+
+    /// Which Whisper model WhisperKit uses. Persisted.
+    @Published private(set) var selectedWhisperKitSpeechModel: WhisperKitSpeechModel =
+        UserDefaults.standard.string(forKey: "selectedWhisperKitSpeechModel").flatMap(WhisperKitSpeechModel.init(rawValue:)) ?? .fastEnglish
+
+    func setSelectedWhisperKitSpeechModel(_ speechModel: WhisperKitSpeechModel) {
+        selectedWhisperKitSpeechModel = speechModel
+        UserDefaults.standard.set(speechModel.rawValue, forKey: "selectedWhisperKitSpeechModel")
+        if speechToTextChoice == .whisperKit {
+            WhisperKitSpeechModelManager.shared.prepare(speechModel)
+        }
+    }
+
     func fetchAvailableElevenLabsVoices() async throws -> [ElevenLabsVoice] {
         try await elevenLabsTTSClient.fetchAvailableVoices()
     }
@@ -391,6 +419,11 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         registerTypeToAskHotKeyIfNeeded()
+        // Load the on-device speech model now, so the first push-to-talk
+        // doesn't wait for it.
+        if speechToTextChoice == .whisperKit {
+            WhisperKitSpeechModelManager.shared.prepare(selectedWhisperKitSpeechModel)
+        }
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
