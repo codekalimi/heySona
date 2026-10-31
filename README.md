@@ -81,6 +81,7 @@ Things to try:
 ### Settings
 
 - **API keys:** save, replace, or remove each key (only the last 4 characters are ever shown).
+- **Conversation history:** heySona remembers past conversations across restarts, writes a short journal entry for each session so it knows what you've been learning, and can search older chats when you mention them. Stored only on your Mac (never screenshots); clear it anytime in Settings.
 - **Voice:** speak replies aloud or show them as text, choose ElevenLabs or the free Mac voice, pick a voice, and preview it.
 - **Mac actions:** turn all actions on or off.
 - **Memory:** turn memory on or off, review every remembered fact, delete one or all.

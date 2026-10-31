@@ -89,7 +89,21 @@ final class CompanionManager: ObservableObject {
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+
+    // MARK: Conversation archive (CompanionManager+ConversationMemory.swift)
+
+    /// Past exchanges and session summaries, saved on this Mac.
+    let conversationArchiveStore = ConversationArchiveStore()
+    /// When on, exchanges are saved, summarized, searchable, and restored at launch.
+    @Published var isConversationHistoryEnabled: Bool =
+        UserDefaults.standard.object(forKey: "isConversationHistoryEnabled") as? Bool ?? true
+    var currentConversationSessionID = UUID().uuidString
+    var lastConversationExchangeDate: Date?
+    var conversationSessionSummaryTask: Task<Void, Never>?
+    var isSummarizingConversationSessions = false
+    /// Session summaries are short, so the cheapest model writes them.
+    lazy var conversationSummaryClaudeAPI = ClaudeAPI(model: ClaudeModelCatalog.haiku.modelID)
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -449,6 +463,7 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         registerTypeToAskHotKeyIfNeeded()
+        restoreConversationContextFromArchive()
         // Load the on-device speech model now, so the first push-to-talk
         // doesn't wait for it.
         if speechToTextChoice == .whisperKit {
@@ -871,10 +886,11 @@ final class CompanionManager: ObservableObject {
                     userTranscript: transcript,
                     assistantResponse: assistantResponseForHistory
                 ))
+                recordExchangeInConversationArchive(userTranscript: transcript, assistantResponse: assistantResponseForHistory)
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
+                if conversationHistory.count > Self.maximumConversationHistoryExchangeCount {
+                    conversationHistory.removeFirst(conversationHistory.count - Self.maximumConversationHistoryExchangeCount)
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")

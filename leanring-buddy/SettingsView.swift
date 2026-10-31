@@ -26,6 +26,10 @@ struct SettingsView: View {
                     companionManager: companionManager,
                     longTermMemoryStore: companionManager.longTermMemoryStore
                 )
+                ConversationHistorySettingsSection(
+                    companionManager: companionManager,
+                    conversationArchiveStore: companionManager.conversationArchiveStore
+                )
                 ProjectAwarenessSettingsSection(companionManager: companionManager)
                 NotesSettingsSection(companionManager: companionManager)
                 modelSection

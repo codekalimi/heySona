@@ -84,6 +84,19 @@ extension CompanionManager {
             userMessageContextLines.append(ActiveProjectContext.contextDescription(for: detectedProject))
         }
 
+        if isConversationHistoryEnabled {
+            systemPrompt += ConversationArchiveTools.systemPromptSection
+            toolDefinitions.append(ConversationArchiveTools.searchToolDefinition)
+            // Summaries change after each session, so they go in the user
+            // message and the system prompt stays cacheable.
+            if let recentSummariesDescription = conversationArchiveStore.recentSummariesDescription(
+                maximumCount: 3,
+                excludingSessionID: currentConversationSessionID
+            ) {
+                userMessageContextLines.append("summaries of the user's recent sessions with you (newest first): \(recentSummariesDescription)")
+            }
+        }
+
         systemPrompt += PersonalContextTools.noteSystemPromptSection(defaultNoteDestination: defaultNoteDestination)
         toolDefinitions += PersonalContextTools.noteToolDefinitions
 
@@ -107,6 +120,11 @@ extension CompanionManager {
             let toolResult: MacActionResult
             if MacActionToolName(rawValue: toolName) != nil {
                 toolResult = await self.macActionExecutor.execute(toolName: toolName, toolInput: toolInput)
+            } else if toolName == ConversationArchiveTools.searchToolName {
+                toolResult = ConversationArchiveTools.executeSearch(
+                    toolInput: toolInput,
+                    conversationArchiveStore: self.conversationArchiveStore
+                )
             } else {
                 toolResult = self.personalContextToolExecutor.execute(
                     toolName: toolName,
