@@ -44,6 +44,10 @@ final class VisualExplanationSession {
     private var preparedNarrationAudioByStepIndex: [Int: Data] = [:]
     private var narrationAudioPreparationTasks: [Int: Task<Data?, Never>] = [:]
 
+    /// Awaited before the first narration, so it doesn't talk over heySona's
+    /// streamed lead-in.
+    var waitForLeadInToFinish: (() async -> Void)?
+
     /// Called once if the scene couldn't be made, with a short spoken apology.
     var onSceneFailed: ((_ spokenFailureMessage: String) -> Void)?
 
@@ -198,6 +202,10 @@ final class VisualExplanationSession {
         defer { isNarrationLoopRunning = false }
 
         // Let heySona's spoken lead-in ("let me show you…") finish first.
+        if let waitForLeadInToFinish {
+            await waitForLeadInToFinish()
+            if Task.isCancelled { return }
+        }
         while elevenLabsTTSClient.isPlaying {
             try? await Task.sleep(nanoseconds: 100_000_000)
             if Task.isCancelled { return }

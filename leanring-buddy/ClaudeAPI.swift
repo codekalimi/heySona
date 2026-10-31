@@ -166,7 +166,13 @@ class ClaudeAPI {
                 "model": model,
                 "max_tokens": ClaudeModelCatalog.streamingResponseMaximumTokens,
                 "stream": true,
-                "system": systemPrompt,
+                // The tools and system prompt are the same from one question to
+                // the next, so they're marked for prompt caching: later requests
+                // reuse them instead of reprocessing, which is faster and cheaper.
+                // (The cache covers everything up to and including this block.)
+                "system": [
+                    ["type": "text", "text": systemPrompt, "cache_control": ["type": "ephemeral"]] as [String: Any]
+                ],
                 "messages": messages,
                 // Thinking is always on for the current models; effort sets how much.
                 "output_config": ["effort": ClaudeModelCatalog.responseEffortLevel],
@@ -398,6 +404,17 @@ class ClaudeAPI {
                     break
                 }
                 contentBlocksByIndex[blockIndex] = updatedContentBlock
+
+            case "message_start":
+                // Shows whether the cached prompt was reused (cache read) or
+                // written for the first time (cache creation).
+                if let startedMessage = eventPayload["message"] as? [String: Any],
+                   let usage = startedMessage["usage"] as? [String: Any] {
+                    let cacheReadTokens = usage["cache_read_input_tokens"] as? Int ?? 0
+                    let cacheWriteTokens = usage["cache_creation_input_tokens"] as? Int ?? 0
+                    let uncachedInputTokens = usage["input_tokens"] as? Int ?? 0
+                    print("🌐 Claude prompt cache: \(cacheReadTokens) read, \(cacheWriteTokens) written, \(uncachedInputTokens) uncached input tokens")
+                }
 
             case "message_delta":
                 if let messageDelta = eventPayload["delta"] as? [String: Any],

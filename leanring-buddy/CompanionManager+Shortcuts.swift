@@ -66,6 +66,7 @@ extension CompanionManager {
     func stopCurrentResponse() {
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        currentStreamingReplySpeaker?.cancel()
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
         stopStepGuidance()

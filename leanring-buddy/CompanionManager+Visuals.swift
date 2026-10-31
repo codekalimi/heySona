@@ -19,7 +19,9 @@ extension CompanionManager {
         visualExplainerPanelManager.showDemoRocketExplanation()
     }
 
-    func startVisualExplanation(brief: String, userQuestion: String) {
+    /// `waitForLeadInToFinish` lets narration wait for the spoken lead-in
+    /// ("sure, let me show you…") when it's still being streamed.
+    func startVisualExplanation(brief: String, userQuestion: String, waitForLeadInToFinish: (() async -> Void)? = nil) {
         stopVisualExplanation()
         print("🎬 Visual explanation requested: \(brief)")
 
@@ -46,6 +48,7 @@ extension CompanionManager {
             self?.stopVisualExplanation()
         }
 
+        visualExplanationSession.waitForLeadInToFinish = waitForLeadInToFinish
         currentVisualExplanationSession = visualExplanationSession
         visualExplanationSession.start()
     }
