@@ -110,9 +110,7 @@ struct SettingsView: View {
                         .pointerCursor()
                     }
 
-                    Text(companionManager.speechVoiceProvider == .elevenLabs
-                         ? "Most natural. If ElevenLabs fails (for example, out of credits), heySona switches to the Mac voice on its own."
-                         : "Free and works offline. Step timing is estimated instead of exact.")
+                    Text(voiceProviderExplanation)
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -129,13 +127,30 @@ struct SettingsView: View {
             .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
 
             Group {
-                if companionManager.speechVoiceProvider == .elevenLabs {
+                switch companionManager.speechVoiceProvider {
+                case .elevenLabs:
                     ElevenLabsVoicePickerCard(companionManager: companionManager)
-                } else {
+                case .macSystemVoice:
                     MacSystemVoicePickerCard(companionManager: companionManager)
+                case .kokoroLocalVoice:
+                    KokoroVoicePickerCard(
+                        companionManager: companionManager,
+                        kokoroVoiceModelManager: KokoroVoiceModelManager.shared
+                    )
                 }
             }
             .opacity(companionManager.isSpokenReplyEnabled ? 1 : 0.5)
+        }
+    }
+
+    private var voiceProviderExplanation: String {
+        switch companionManager.speechVoiceProvider {
+        case .elevenLabs:
+            return "Cloud voice. If ElevenLabs fails (for example, out of credits), heySona switches to the Mac voice on its own."
+        case .macSystemVoice:
+            return "Built into macOS: free and offline. Step timing is estimated instead of exact."
+        case .kokoroLocalVoice:
+            return "A natural AI voice (Kokoro) that runs on your Mac: free, offline, no credits. Downloads about 340 MB once."
         }
     }
 
@@ -629,6 +644,109 @@ private struct SpeechToTextSettingsSection: View {
             .foregroundColor(color)
             .lineLimit(3)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Local AI Voice (Kokoro) Picker
+
+private struct KokoroVoicePickerCard: View {
+    @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var kokoroVoiceModelManager: KokoroVoiceModelManager
+
+    @State private var isPreviewingVoice = false
+    @State private var previewErrorMessage: String?
+
+    var body: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Local AI voice")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                modelStatusRow
+
+                if !kokoroVoiceModelManager.availableVoiceNames.isEmpty {
+                    Picker("", selection: Binding(
+                        get: { companionManager.selectedKokoroVoiceName ?? KokoroVoiceModelManager.defaultVoiceName },
+                        set: { companionManager.setSelectedKokoroVoiceName($0) }
+                    )) {
+                        ForEach(kokoroVoiceModelManager.availableVoiceNames, id: \.self) { voiceName in
+                            Text(KokoroVoiceModelManager.displayName(forVoiceName: voiceName)).tag(voiceName)
+                        }
+                    }
+                    .labelsHidden()
+                    .pointerCursor()
+                }
+
+                if let previewErrorMessage {
+                    Text(previewErrorMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.destructiveText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack {
+                    Spacer()
+                    SettingsCapsuleButton(
+                        title: isPreviewingVoice ? "Playing…" : "Preview",
+                        isProminent: false,
+                        isEnabled: !isPreviewingVoice && kokoroVoiceModelManager.modelState == .ready,
+                        action: { Task { await previewSelectedVoice() } }
+                    )
+                }
+            }
+        }
+        .onAppear {
+            // After this view update, so the state change isn't published mid-update.
+            Task { @MainActor in kokoroVoiceModelManager.prepare() }
+        }
+    }
+
+    @ViewBuilder
+    private var modelStatusRow: some View {
+        HStack(spacing: 8) {
+            switch kokoroVoiceModelManager.modelState {
+            case .notDownloaded:
+                statusText("Not set up yet.", color: DS.Colors.textTertiary)
+            case .downloading:
+                ProgressView().controlSize(.small)
+                statusText("Downloading the voice (about 340 MB, once)…", color: DS.Colors.textTertiary)
+            case .loading:
+                ProgressView().controlSize(.small)
+                statusText("Getting the voice ready…", color: DS.Colors.textTertiary)
+            case .ready:
+                statusText("Ready. Replies are spoken on your Mac.", color: DS.Colors.success)
+            case .failed(let message):
+                statusText("Couldn't set up the voice: \(message)", color: DS.Colors.destructiveText)
+                Spacer()
+                SettingsCapsuleButton(
+                    title: "Retry",
+                    isProminent: false,
+                    isEnabled: true,
+                    action: { kokoroVoiceModelManager.prepare() }
+                )
+            }
+        }
+    }
+
+    private func statusText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundColor(color)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func previewSelectedVoice() async {
+        isPreviewingVoice = true
+        previewErrorMessage = nil
+        defer { isPreviewingVoice = false }
+        do {
+            try await companionManager.previewSelectedVoice()
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+        } catch {
+            previewErrorMessage = error.localizedDescription
+        }
     }
 }
 

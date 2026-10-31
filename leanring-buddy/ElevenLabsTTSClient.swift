@@ -15,13 +15,16 @@ import Foundation
 enum SpeechVoiceProvider: String, CaseIterable, Identifiable {
     case elevenLabs
     case macSystemVoice
+    /// Kokoro-82M on this Mac (KokoroVoice.swift): natural and free.
+    case kokoroLocalVoice
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .elevenLabs: return "ElevenLabs"
-        case .macSystemVoice: return "Mac voice (free)"
+        case .macSystemVoice: return "Mac voice"
+        case .kokoroLocalVoice: return "Local AI (free)"
         }
     }
 }
@@ -39,8 +42,13 @@ final class ElevenLabsTTSClient {
     }
     /// The installed Mac voice to use; nil picks the best one for the user's language.
     var macSystemVoiceIdentifier: String?
-    /// Called when ElevenLabs fails and the Mac voice takes over, with the reason.
-    var onFallbackToMacSystemVoice: ((_ elevenLabsFailureDescription: String) -> Void)?
+    /// The Kokoro voice to use, like "af_heart"; nil uses the default.
+    var kokoroVoiceName: String?
+    /// Called when ElevenLabs or the local AI voice fails and the Mac voice
+    /// takes over, with which voice failed and why.
+    var onFallbackToMacSystemVoice: ((_ failedVoiceName: String, _ failureDescription: String) -> Void)?
+    /// So a Kokoro problem is reported once, not for every sentence.
+    private var hasReportedKokoroFallback = false
 
     /// After ElevenLabs fails, every sentence would fail again (and add a
     /// delay), so the Mac voice is used for a while before trying again.
@@ -94,6 +102,21 @@ final class ElevenLabsTTSClient {
     /// Turns `text` into audio without playing it, so audio for the next
     /// part of an explanation can be prepared while the current part plays.
     func synthesizeSpeechAudio(_ text: String) async throws -> Data {
+        if speechVoiceProvider == .kokoroLocalVoice {
+            do {
+                let kokoroAudioData = try await KokoroVoiceModelManager.shared.synthesizeSpeechAudio(text, voiceName: kokoroVoiceName)
+                hasReportedKokoroFallback = false
+                return kokoroAudioData
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw error }
+                print("⚠️ Local AI voice failed, using the Mac voice: \(error.localizedDescription)")
+                if !hasReportedKokoroFallback {
+                    hasReportedKokoroFallback = true
+                    onFallbackToMacSystemVoice?(SpeechVoiceProvider.kokoroLocalVoice.displayName, error.localizedDescription)
+                }
+                return try await synthesizeSpeechAudioWithMacSystemVoice(text)
+            }
+        }
         if shouldUseMacSystemVoice {
             return try await synthesizeSpeechAudioWithMacSystemVoice(text)
         }
@@ -115,7 +138,7 @@ final class ElevenLabsTTSClient {
         elevenLabsPausedUntilDate = Date().addingTimeInterval(Self.elevenLabsRetryDelayInSeconds)
         print("⚠️ ElevenLabs failed, using the Mac voice for the next 10 minutes: \(error.localizedDescription)")
         if isNewFailure {
-            onFallbackToMacSystemVoice?(error.localizedDescription)
+            onFallbackToMacSystemVoice?(SpeechVoiceProvider.elevenLabs.displayName, error.localizedDescription)
         }
     }
 
@@ -163,8 +186,14 @@ final class ElevenLabsTTSClient {
     /// start). Used by step-by-step guidance to move the cursor in sync with
     /// the voice. Returns nil timestamps if ElevenLabs didn't include them.
     func speakTextWithCharacterTimestamps(_ text: String) async throws -> (characterStartTimesInSeconds: [Double]?, audioDurationInSeconds: Double) {
-        // The Mac voice has no character timestamps; step guidance then
-        // estimates timing from each step's position in the text.
+        // The Mac and local AI voices have no character timestamps; step
+        // guidance then estimates timing from each step's position in the text.
+        if speechVoiceProvider == .kokoroLocalVoice {
+            let speechAudioData = try await synthesizeSpeechAudio(text)
+            try Task.checkCancellation()
+            try playSpeechAudio(speechAudioData)
+            return (characterStartTimesInSeconds: nil, audioDurationInSeconds: currentAudioDurationInSeconds)
+        }
         if shouldUseMacSystemVoice {
             return try await speakTextWithoutTimestampsUsingMacSystemVoice(text)
         }

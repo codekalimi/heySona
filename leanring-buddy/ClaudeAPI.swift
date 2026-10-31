@@ -525,7 +525,8 @@ class ClaudeAPI {
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 256,
+            // Room for any reasoning before the text (short replies only use a little).
+            "max_tokens": 1024,
             "system": systemPrompt,
             "messages": messages
         ]
@@ -548,13 +549,19 @@ class ClaudeAPI {
         }
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let content = json?["content"] as? [[String: Any]],
-              let textBlock = content.first(where: { ($0["type"] as? String) == "text" }),
-              let text = textBlock["text"] as? String else {
+        let content = json?["content"] as? [[String: Any]] ?? []
+        let text = content
+            .filter { ($0["type"] as? String) == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined()
+        guard !text.isEmpty else {
+            // Say why there was no text (e.g. max_tokens or refusal), not just "invalid".
+            let stopReason = json?["stop_reason"] as? String ?? "unknown"
+            let blockTypes = content.compactMap { $0["type"] as? String }.joined(separator: ", ")
             throw NSError(
                 domain: "ClaudeAPI",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
+                userInfo: [NSLocalizedDescriptionKey: "No text in the reply (stop reason: \(stopReason), blocks: \(blockTypes.isEmpty ? "none" : blockTypes))"]
             )
         }
 
