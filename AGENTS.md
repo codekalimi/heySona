@@ -39,7 +39,9 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 
 ### Key Architecture Decisions
 
-**Menu Bar Panel Pattern**: The companion panel uses `NSStatusItem` for the menu bar icon and a custom borderless `NSPanel` for the floating control panel. This gives full control over appearance (dark, rounded corners, custom shadow) and avoids the standard macOS menu/popover chrome. The panel is non-activating so it doesn't steal focus. A global event monitor auto-dismisses it on outside clicks.
+**Menu Bar Panel Pattern**: The companion panel uses `NSStatusItem` and a custom borderless, non-activating `NSPanel`. Its quiet view is 360 x 380 points; typing or viewing a reply expands it to 440 x 560 (height capped to the available screen). `DS.CompanionPanel` supplies adaptive light/dark surfaces, native text colors, a blue accent, and consistent corners; the window server draws its shadow. `MenuBarPanelManager` observes expansion and setup readiness, animates resizing unless Reduce Motion is on, and clamps the frame to the status item's screen. Outside clicks dismiss it. Settings and quit/onboarding actions remain available in the header; Library, Last reply, and model controls sit in the footer.
+
+**Panel Conversation**: `CompanionPanelConversation` owns the latest exchange in memory, independently of the saved archive. The main pipeline streams readable text into it for both spoken and text-only replies, strips complete and partial visual/control tags, preserves interrupted text, and ignores stale callbacks using exchange ids. The expanded panel supports selection, copy, inline follow-ups, stop, collapse, and reopening the last reply. Submitting from the panel restores the previous app and waits 0.15 s before the shared typed-question pipeline captures the screen and builds request context; only then does `.heySonaShowConversationPanel` reopen it without taking keyboard focus. Background voice and Spotlight questions never auto-open this panel. Clear History also clears the visible exchange.
 
 **Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor position, response text, waveform, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
 
@@ -99,8 +101,9 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `CompanionManager+Permissions.swift` | ~115 | Permission checks, screen content request, permission polling. |
 | `CompanionManager+Onboarding.swift` | ~300 | Onboarding video, music, prompt stream, and the pointing demo. |
 | `CompanionManager+PointTags.swift` | ~70 | `[POINT:...]` tag parsing. |
-| `MenuBarPanelManager.swift` | ~280 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon (a template drawing of the heySona mark: pointer plus two sound waves), manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~720 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Haiku/Sonnet/Opus), permissions UI, onboarding Start button, and quit button. Dark aesthetic using `DS` design system. |
+| `MenuBarPanelManager.swift` | ~355 | NSStatusItem + adaptive NSPanel lifecycle, anchored quiet/conversation resizing, focus handoff for inline questions, passive reply presentation, and outside-click dismissal. |
+| `CompanionPanelView.swift` | ~500 | Adaptive SwiftUI quiet panel, expanded streaming reply with copy and inline follow-ups, setup permissions, header actions, and Library/Last reply/model footer. |
+| `CompanionPanelConversation.swift` | ~110 | Latest exchange presentation state, reply cleanup for streamed control tags, interruption/errors, and exchange-id guards against stale callbacks. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | Cursor-following text bubble for replies. Used when spoken replies are turned off in Settings. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |

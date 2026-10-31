@@ -6,7 +6,7 @@
 //
 
 import Testing
-@testable import leanring_buddy
+@testable import heySona
 
 struct leanring_buddyTests {
 
