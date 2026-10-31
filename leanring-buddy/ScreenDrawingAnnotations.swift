@@ -185,7 +185,7 @@ enum ScreenDrawingTagParser {
     drawing on screen:
     besides pointing, you can draw on the user's screen to show them things. it makes your help far more concrete, so whenever the question is about something visible (where something is, how to do something in the app they're looking at, what part of the screen matters), show it: point at the main thing and draw around the rest. skip drawing for general questions that have nothing to do with the screen.
 
-    add drawing tags at the very end of your reply, after your spoken text and before the [POINT:...] tag. use the same pixel coordinates as pointing (top-left origin, the image's labeled dimensions). each tag can end with a short label (1-4 words) and :screenN when it's not on the cursor's screen.
+    put each drawing tag right after the sentence it belongs to: it appears on the user's real screen the moment you say that sentence, so draw as you talk ("this is the command you typed. [UNDERLINE:…] the shell reads it here. [BOX:…]"). label drawings with the real text you see on screen (the exact command, file name, or value), not generic words. use the same pixel coordinates as pointing (top-left origin, the image's labeled dimensions). each tag can end with a short label (1-4 words) and :screenN when it's not on the cursor's screen.
     - [CIRCLE:x,y,radius:label] circle a button, icon, or small element. make the radius a bit larger than the element.
     - [BOX:x,y,width,height:label] highlight a region, panel, paragraph, or setting. x,y is the top-left corner.
     - [ARROW:fromX,fromY,toX,toY:label] arrow pointing to something, e.g. from empty space toward a menu. the arrowhead is at toX,toY.
@@ -193,7 +193,7 @@ enum ScreenDrawingTagParser {
 
     use at most four drawings, and only on things you can actually see in the screenshot. for steps, label them "1", "2", "3" in order. never mention the tags or coordinates out loud.
 
-    example: "open the view menu, then pick show sidebar. [CIRCLE:212,12,24:view menu] [ARROW:420,180,240,52:then this] [POINT:212,12:view menu]"
+    example: "open the view menu. [CIRCLE:212,12,24:view menu] then pick show sidebar. [ARROW:420,180,240,52:show sidebar] [POINT:212,12:view menu]"
     """
 }
 
