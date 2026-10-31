@@ -68,7 +68,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
 | `CompanionManager.swift` | ~1350 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
-| `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
+| `MenuBarPanelManager.swift` | ~280 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon (a template drawing of the heySona mark: pointer plus two sound waves), manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~720 | SwiftUI panel content for the menu bar dropdown. Shows companion status, settings gear button, push-to-talk and type-to-ask instructions, "Type a question" button, model picker (Haiku/Sonnet/Opus), permissions UI, onboarding Start button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | Cursor-following text bubble for replies. Used when spoken replies are turned off in Settings. |
@@ -94,6 +94,7 @@ On launch, `APIKeySetupPrompt` asks for any missing key. Keys can also be saved,
 | `NoteSaver.swift` | ~150 | Saves notes to Apple Notes (AppleScript), an Obsidian vault, or a Markdown folder. |
 | `PersonalContextTools.swift` | ~240 | Tool definitions, system prompt sections, and executor for memory, project files, and notes. |
 | `PersonalContextSettingsSections.swift` | ~310 | Settings sections for memory (fact list with delete), project (pinned folder), and notes (destination, folders). |
+| `scripts/generate-brand-assets.swift` | ~480 | Draws every brand asset from one geometry: the AppIcon PNGs (16-1024, with simplified waves at 64 px and below), `branding/heysona-mark.svg`, and `branding/heysona-logo-light.png` / `-dark.png`. Run from the repo root with `swift scripts/generate-brand-assets.swift`; never hand-edit the generated files. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |

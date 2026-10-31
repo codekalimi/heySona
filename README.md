@@ -1,4 +1,9 @@
-# heySona
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/heysona-logo-dark.png">
+    <img src="branding/heysona-logo-light.png" alt="heySona" width="420">
+  </picture>
+</p>
 
 heySona is an AI companion that lives in your Mac's menu bar. Hold a shortcut and talk (or type), and it looks at your screen, answers out loud, and can point at things, open apps, set reminders, read your project's code, and remember what matters to you.
 
@@ -126,6 +131,14 @@ leanring-buddy/                     Swift source
   OverlayWindow.swift                 The blue cursor overlay
 leanring-buddy.xcodeproj/           Xcode project
 AGENTS.md                           Architecture notes for coding agents (CLAUDE.md links here)
+branding/                           Logo (light and dark) and the scalable SVG mark
+scripts/generate-brand-assets.swift Draws the app icon, logo, and SVG from one design
+```
+
+To change the icon or logo, edit `scripts/generate-brand-assets.swift` and run it from the repository root:
+
+```bash
+swift scripts/generate-brand-assets.swift
 ```
 
 ## Credits and license
