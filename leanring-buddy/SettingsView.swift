@@ -110,6 +110,28 @@ struct SettingsView: View {
                     )
 
                     settingsToggleRow(
+                        title: "Visual explanations",
+                        detail: "Ask \"explain how a rocket engine works\" or \"show me how the heart pumps blood\" and heySona builds an animated 3D model or diagram and narrates it step by step.",
+                        isOn: Binding(
+                            get: { companionManager.isVisualExplanationEnabled },
+                            set: { companionManager.setVisualExplanationEnabled($0) }
+                        )
+                    )
+
+                    HStack {
+                        Text("See an example")
+                            .font(.system(size: 11))
+                            .foregroundColor(DS.Colors.textTertiary)
+                        Spacer()
+                        SettingsCapsuleButton(
+                            title: "Show rocket demo",
+                            isProminent: false,
+                            isEnabled: true,
+                            action: { companionManager.showVisualExplainerDemo() }
+                        )
+                    }
+
+                    settingsToggleRow(
                         title: "Show captions",
                         detail: "Shows the spoken reply as text next to your cursor while heySona talks.",
                         isOn: Binding(

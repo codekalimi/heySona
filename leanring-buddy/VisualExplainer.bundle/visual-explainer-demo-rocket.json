@@ -1,0 +1,673 @@
+{
+  "title": "How a rocket engine works",
+  "mode": "3d",
+  "camera": {
+    "fit": true,
+    "angle": [
+      45,
+      18
+    ],
+    "autoRotate": true
+  },
+  "floor": true,
+  "floorY": -4.6,
+  "objects": [
+    {
+      "id": "shell",
+      "shape": "cylinder",
+      "radius": 1.35,
+      "height": 9.2,
+      "openEnded": true,
+      "position": [
+        0,
+        6.1,
+        0
+      ],
+      "color": "#dfe5ee",
+      "metalness": 0.35,
+      "roughness": 0.35
+    },
+    {
+      "id": "noseCone",
+      "shape": "cone",
+      "radius": 1.35,
+      "height": 2.4,
+      "position": [
+        0,
+        11.9,
+        0
+      ],
+      "color": "#dfe5ee",
+      "metalness": 0.35,
+      "roughness": 0.35
+    },
+    {
+      "id": "finA",
+      "shape": "box",
+      "size": [
+        1.0,
+        1.6,
+        0.08
+      ],
+      "position": [
+        1.75,
+        2.2,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "color": "#3380ff"
+    },
+    {
+      "id": "finB",
+      "shape": "box",
+      "size": [
+        1.0,
+        1.6,
+        0.08
+      ],
+      "position": [
+        -0.875,
+        2.2,
+        1.516
+      ],
+      "rotation": [
+        0,
+        -120,
+        0
+      ],
+      "color": "#3380ff"
+    },
+    {
+      "id": "finC",
+      "shape": "box",
+      "size": [
+        1.0,
+        1.6,
+        0.08
+      ],
+      "position": [
+        -0.875,
+        2.2,
+        -1.516
+      ],
+      "rotation": [
+        0,
+        -240,
+        0
+      ],
+      "color": "#3380ff"
+    },
+    {
+      "id": "fuelTank",
+      "shape": "cylinder",
+      "radius": 1.05,
+      "height": 2.4,
+      "position": [
+        0,
+        9.0,
+        0
+      ],
+      "color": "#e0913a",
+      "metalness": 0.2
+    },
+    {
+      "id": "oxidizerTank",
+      "shape": "cylinder",
+      "radius": 1.05,
+      "height": 2.6,
+      "position": [
+        0,
+        6.2,
+        0
+      ],
+      "color": "#4a8fe0",
+      "metalness": 0.2
+    },
+    {
+      "id": "fuelLine",
+      "shape": "tube",
+      "radius": 0.07,
+      "points": [
+        [
+          0.6,
+          7.8,
+          0.4
+        ],
+        [
+          1.18,
+          7.3,
+          0.3
+        ],
+        [
+          1.18,
+          5.2,
+          0.3
+        ],
+        [
+          0.95,
+          4.6,
+          0.15
+        ]
+      ],
+      "color": "#e0913a"
+    },
+    {
+      "id": "oxidizerLine",
+      "shape": "tube",
+      "radius": 0.08,
+      "points": [
+        [
+          0.4,
+          4.9,
+          -0.2
+        ],
+        [
+          0.78,
+          4.62,
+          -0.08
+        ]
+      ],
+      "color": "#4a8fe0"
+    },
+    {
+      "id": "turbopump",
+      "shape": "cylinder",
+      "radius": 0.32,
+      "height": 0.5,
+      "position": [
+        0.9,
+        4.4,
+        0
+      ],
+      "color": "#7c8aa3",
+      "metalness": 0.6,
+      "roughness": 0.3
+    },
+    {
+      "id": "feedLine",
+      "shape": "tube",
+      "radius": 0.08,
+      "points": [
+        [
+          0.9,
+          4.15,
+          0
+        ],
+        [
+          0.8,
+          3.85,
+          0
+        ],
+        [
+          0.4,
+          3.66,
+          0
+        ]
+      ],
+      "color": "#9aa7bb"
+    },
+    {
+      "id": "injector",
+      "shape": "cylinder",
+      "radius": 0.62,
+      "height": 0.12,
+      "position": [
+        0,
+        3.56,
+        0
+      ],
+      "color": "#8e9bb1",
+      "metalness": 0.6
+    },
+    {
+      "id": "chamber",
+      "shape": "cylinder",
+      "radius": 0.6,
+      "height": 1.0,
+      "position": [
+        0,
+        3.0,
+        0
+      ],
+      "color": "#b8c0cc",
+      "metalness": 0.55,
+      "roughness": 0.3
+    },
+    {
+      "id": "nozzle",
+      "shape": "lathe",
+      "profile": [
+        [
+          0.6,
+          2.5
+        ],
+        [
+          0.36,
+          2.2
+        ],
+        [
+          0.5,
+          1.7
+        ],
+        [
+          0.76,
+          1.0
+        ],
+        [
+          1.02,
+          0.4
+        ]
+      ],
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "color": "#c46a3a",
+      "metalness": 0.7,
+      "roughness": 0.3
+    }
+  ],
+  "steps": [
+    {
+      "narration": "A rocket engine makes thrust by burning propellant and throwing the hot gas out the back as fast as it can. Let's look inside.",
+      "actions": [
+        {
+          "do": "label",
+          "target": "noseCone",
+          "text": "Rocket",
+          "offset": [
+            0,
+            0.8,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "narration": "It carries two propellants: a fuel, like kerosene, and an oxidizer, usually liquid oxygen. There's no air in space, so the rocket brings its own oxygen to burn.",
+      "actions": [
+        {
+          "do": "unlabel"
+        },
+        {
+          "do": "cutaway",
+          "targets": [
+            "shell",
+            "noseCone"
+          ],
+          "opacity": 0.1
+        },
+        {
+          "do": "focus",
+          "targets": [
+            "fuelTank",
+            "oxidizerTank"
+          ]
+        },
+        {
+          "do": "label",
+          "target": "fuelTank",
+          "text": "Fuel (kerosene)",
+          "offset": [
+            1.25,
+            0.5,
+            0
+          ]
+        },
+        {
+          "do": "label",
+          "target": "oxidizerTank",
+          "text": "Liquid oxygen",
+          "offset": [
+            1.25,
+            0.3,
+            0
+          ]
+        },
+        {
+          "do": "camera",
+          "fit": [
+            "fuelTank",
+            "oxidizerTank"
+          ],
+          "angle": [
+            50,
+            22
+          ],
+          "seconds": 1.8
+        }
+      ]
+    },
+    {
+      "narration": "A turbopump spins at tens of thousands of RPM, forcing both propellants down toward the engine at enormous pressure.",
+      "actions": [
+        {
+          "do": "focus",
+          "targets": [
+            "turbopump",
+            "fuelLine",
+            "oxidizerLine",
+            "fuelTank",
+            "oxidizerTank"
+          ]
+        },
+        {
+          "do": "spin",
+          "targets": "turbopump",
+          "axis": "y",
+          "speed": 3
+        },
+        {
+          "do": "flow",
+          "path": [
+            [
+              0.6,
+              7.8,
+              0.4
+            ],
+            [
+              1.18,
+              7.3,
+              0.3
+            ],
+            [
+              1.18,
+              5.2,
+              0.3
+            ],
+            [
+              0.95,
+              4.6,
+              0.15
+            ]
+          ],
+          "color": "#ffb066",
+          "speed": 2.2,
+          "count": 30
+        },
+        {
+          "do": "flow",
+          "path": [
+            [
+              0.4,
+              4.9,
+              -0.2
+            ],
+            [
+              0.78,
+              4.62,
+              -0.08
+            ]
+          ],
+          "color": "#7cc4ff",
+          "speed": 1.2,
+          "count": 10
+        },
+        {
+          "do": "label",
+          "target": "turbopump",
+          "text": "Turbopump",
+          "offset": [
+            0.4,
+            0.5,
+            0
+          ]
+        },
+        {
+          "do": "camera",
+          "fit": [
+            "turbopump",
+            "fuelLine",
+            "oxidizerLine",
+            "feedLine"
+          ],
+          "angle": [
+            40,
+            18
+          ],
+          "seconds": 1.8
+        }
+      ]
+    },
+    {
+      "narration": "At the injector, both liquids spray through hundreds of tiny holes and mix into a fine mist, ready to burn.",
+      "actions": [
+        {
+          "do": "unlabel",
+          "targets": [
+            "fuelTank",
+            "oxidizerTank"
+          ]
+        },
+        {
+          "do": "focus",
+          "targets": [
+            "injector",
+            "chamber",
+            "feedLine",
+            "turbopump"
+          ]
+        },
+        {
+          "do": "flow",
+          "path": [
+            [
+              0.9,
+              4.15,
+              0
+            ],
+            [
+              0.8,
+              3.85,
+              0
+            ],
+            [
+              0.4,
+              3.66,
+              0
+            ],
+            [
+              0,
+              3.56,
+              0
+            ]
+          ],
+          "color": "#c9a0ff",
+          "speed": 1.4,
+          "count": 14
+        },
+        {
+          "do": "label",
+          "target": "injector",
+          "text": "Injector",
+          "offset": [
+            -0.9,
+            0.3,
+            0
+          ]
+        },
+        {
+          "do": "camera",
+          "fit": [
+            "injector",
+            "chamber",
+            "turbopump"
+          ],
+          "angle": [
+            45,
+            22
+          ],
+          "seconds": 1.6
+        }
+      ]
+    },
+    {
+      "narration": "In the combustion chamber the mist burns at over three thousand degrees, turning into extremely hot, high-pressure gas.",
+      "actions": [
+        {
+          "do": "unlabel",
+          "targets": [
+            "turbopump",
+            "injector"
+          ]
+        },
+        {
+          "do": "focus",
+          "targets": [
+            "chamber",
+            "injector",
+            "nozzle"
+          ]
+        },
+        {
+          "do": "highlight",
+          "targets": "chamber",
+          "color": "#ff7a1a",
+          "glow": true
+        },
+        {
+          "do": "label",
+          "target": "chamber",
+          "text": "Combustion chamber",
+          "offset": [
+            0,
+            0.7,
+            0
+          ]
+        },
+        {
+          "do": "camera",
+          "fit": [
+            "chamber",
+            "injector"
+          ],
+          "angle": [
+            45,
+            15
+          ],
+          "seconds": 1.6
+        }
+      ]
+    },
+    {
+      "narration": "The gas squeezes through the narrow throat, then expands in the bell-shaped nozzle, which speeds it up to several times the speed of sound.",
+      "actions": [
+        {
+          "do": "unlabel",
+          "targets": [
+            "chamber"
+          ]
+        },
+        {
+          "do": "focus",
+          "targets": [
+            "nozzle",
+            "chamber"
+          ]
+        },
+        {
+          "do": "label",
+          "position": [
+            0.36,
+            2.2,
+            0
+          ],
+          "text": "Throat"
+        },
+        {
+          "do": "label",
+          "target": "nozzle",
+          "text": "Nozzle",
+          "offset": [
+            1.2,
+            -0.6,
+            0
+          ]
+        },
+        {
+          "do": "plume",
+          "from": "nozzle",
+          "direction": [
+            0,
+            -1,
+            0
+          ],
+          "length": 4.2,
+          "spread": 0.28,
+          "color": "#ff9a3c"
+        },
+        {
+          "do": "camera",
+          "fit": [
+            "nozzle",
+            "chamber"
+          ],
+          "angle": [
+            45,
+            8
+          ],
+          "seconds": 1.8
+        }
+      ]
+    },
+    {
+      "narration": "Pushing all that gas down pushes the rocket up. That's Newton's third law: every action has an equal and opposite reaction. That push is thrust.",
+      "actions": [
+        {
+          "do": "unlabel"
+        },
+        {
+          "do": "unfocus"
+        },
+        {
+          "do": "arrow",
+          "from": [
+            2.8,
+            3.5,
+            0
+          ],
+          "to": [
+            2.8,
+            10.5,
+            0
+          ],
+          "text": "Thrust",
+          "color": "#3380ff"
+        },
+        {
+          "do": "arrow",
+          "from": [
+            -2.8,
+            4.5,
+            0
+          ],
+          "to": [
+            -2.8,
+            -2.5,
+            0
+          ],
+          "text": "Exhaust",
+          "color": "#ff9a3c"
+        },
+        {
+          "do": "orbit",
+          "enabled": true
+        },
+        {
+          "do": "camera",
+          "fit": true,
+          "angle": [
+            45,
+            15
+          ],
+          "seconds": 2.2
+        }
+      ]
+    }
+  ]
+}

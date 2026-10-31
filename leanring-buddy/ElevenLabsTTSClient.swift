@@ -32,6 +32,30 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
+        let speechAudioData = try await synthesizeSpeechAudio(text)
+        try Task.checkCancellation()
+        try playSpeechAudio(speechAudioData)
+    }
+
+    /// Plays audio made by `synthesizeSpeechAudio`, replacing anything playing.
+    func playSpeechAudio(_ speechAudioData: Data) throws {
+        let player = try AVAudioPlayer(data: speechAudioData)
+        self.audioPlayer = player
+        player.play()
+        print("🔊 ElevenLabs TTS: playing \(speechAudioData.count / 1024)KB audio")
+    }
+
+    func pausePlayback() {
+        audioPlayer?.pause()
+    }
+
+    func resumePlayback() {
+        audioPlayer?.play()
+    }
+
+    /// Turns `text` into MP3 audio without playing it, so audio for the next
+    /// part of an explanation can be prepared while the current part plays.
+    func synthesizeSpeechAudio(_ text: String) async throws -> Data {
         // Read the key on every request so a key saved after launch is picked up.
         let elevenLabsAPIKey = try APIKeyKeychainStore.requireAPIKey(for: .elevenLabs)
 
@@ -66,12 +90,7 @@ final class ElevenLabsTTSClient {
                           userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
         }
 
-        try Task.checkCancellation()
-
-        let player = try AVAudioPlayer(data: data)
-        self.audioPlayer = player
-        player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        return data
     }
 
     /// Sends `text` to ElevenLabs' timestamped endpoint, plays the audio, and
