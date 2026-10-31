@@ -52,14 +52,14 @@ extension CompanionManager {
         })
     }
 
-    func submitTypedQuestion(_ typedQuestion: String) {
+    func submitTypedQuestion(_ typedQuestion: String, presentInMenuBar: Bool = false) {
         guard !buddyDictationManager.isDictationInProgress else { return }
 
         prepareForNewInteraction()
 
         lastTranscript = typedQuestion
         print("⌨️ Companion received typed question: \(typedQuestion)")
-        sendTranscriptToClaudeWithScreenshot(transcript: typedQuestion)
+        sendTranscriptToClaudeWithScreenshot(transcript: typedQuestion, presentInMenuBar: presentInMenuBar)
     }
 
     /// Stops the current reply right away: cancels the Claude request if it's
@@ -69,6 +69,7 @@ extension CompanionManager {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         currentStreamingReplySpeaker?.cancel()
+        panelConversation.interrupt()
         stopGuidedMode()
         elevenLabsTTSClient.stopPlayback()
         hideCaptionAndBubble()
