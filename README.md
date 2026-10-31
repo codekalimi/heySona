@@ -4,8 +4,6 @@ heySona is an AI companion that lives in your Mac's menu bar. Hold a shortcut an
 
 It's a personal app: it runs entirely on your Mac and talks to Claude, ElevenLabs, and AssemblyAI directly with your own API keys.
 
-![heySona: an AI companion that lives on your Mac](heysona-demo.gif)
-
 ## Features
 
 - **Talk or type.** Hold **Control + Option** to talk, or press **⌘⇧Space** to type a question in a Spotlight-style box.
