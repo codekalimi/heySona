@@ -16,6 +16,10 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 apiKeysSection
                 voiceSection
+                SpeechToTextSettingsSection(
+                    companionManager: companionManager,
+                    whisperKitSpeechModelManager: WhisperKitSpeechModelManager.shared
+                )
                 visualsSection
                 macActionsSection
                 LongTermMemorySettingsSection(
@@ -458,6 +462,112 @@ private struct APIKeySettingsRow: View {
     private func removeSavedAPIKey() {
         APIKeyKeychainStore.deleteAPIKey(for: apiKeyKind)
         refreshSavedAPIKeySuffix()
+    }
+}
+
+// MARK: - Speech To Text
+
+private struct SpeechToTextSettingsSection: View {
+    @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var whisperKitSpeechModelManager: WhisperKitSpeechModelManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsSectionTitle("SPEECH TO TEXT")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Service")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+
+                        Spacer()
+
+                        Picker("", selection: Binding(
+                            get: { companionManager.speechToTextChoice },
+                            set: { companionManager.setSpeechToTextChoice($0) }
+                        )) {
+                            ForEach(SpeechToTextChoice.allCases) { choice in
+                                Text(choice.displayName).tag(choice)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .pointerCursor()
+                    }
+
+                    Text(companionManager.speechToTextChoice == .assemblyAI
+                         ? "Cloud. Transcribes while you talk, so text is ready the moment you let go. Needs an AssemblyAI key (without one, Apple's speech recognition is used)."
+                         : "Runs on your Mac: free, private, works offline. Transcribes after you let go (about a quarter second with the Fast model).")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if companionManager.speechToTextChoice == .whisperKit {
+                        HStack {
+                            Text("Model")
+                                .font(.system(size: 12))
+                                .foregroundColor(DS.Colors.textSecondary)
+                            Spacer()
+                            Picker("", selection: Binding(
+                                get: { companionManager.selectedWhisperKitSpeechModel },
+                                set: { companionManager.setSelectedWhisperKitSpeechModel($0) }
+                            )) {
+                                ForEach(WhisperKitSpeechModel.allCases) { speechModel in
+                                    Text(speechModel.displayName).tag(speechModel)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                            .pointerCursor()
+                        }
+
+                        whisperKitModelStatusRow
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var whisperKitModelStatusRow: some View {
+        HStack(spacing: 8) {
+            switch whisperKitSpeechModelManager.modelState {
+            case .notPrepared:
+                statusText("Not loaded yet.", color: DS.Colors.textTertiary)
+            case .downloading(let fractionCompleted):
+                ProgressView(value: fractionCompleted)
+                    .progressViewStyle(.linear)
+                    .tint(DS.Colors.accent)
+                    .frame(width: 120)
+                statusText("Downloading the model… \(Int(fractionCompleted * 100))%", color: DS.Colors.textTertiary)
+            case .loading:
+                ProgressView()
+                    .controlSize(.small)
+                statusText("Getting the model ready. The very first time can take a minute or two.", color: DS.Colors.textTertiary)
+            case .ready:
+                statusText("Ready. Push-to-talk now runs on your Mac.", color: DS.Colors.success)
+            case .failed(let message):
+                statusText("Couldn't load the model: \(message)", color: DS.Colors.destructiveText)
+                Spacer()
+                SettingsCapsuleButton(
+                    title: "Retry",
+                    isProminent: false,
+                    isEnabled: true,
+                    action: { whisperKitSpeechModelManager.prepare(companionManager.selectedWhisperKitSpeechModel) }
+                )
+            }
+        }
+    }
+
+    private func statusText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundColor(color)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

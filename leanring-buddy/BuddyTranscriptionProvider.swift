@@ -29,6 +29,28 @@ protocol BuddyTranscriptionProvider {
     ) async throws -> any BuddyStreamingTranscriptionSession
 }
 
+/// The speech-to-text service picked in Settings > Speech to text.
+enum SpeechToTextChoice: String, CaseIterable, Identifiable {
+    case assemblyAI = "assemblyai"
+    case whisperKit = "whisperkit"
+
+    static let userDefaultsKey = "speechToTextChoice"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .assemblyAI: return "AssemblyAI"
+        case .whisperKit: return "WhisperKit (free)"
+        }
+    }
+
+    /// The saved choice, or nil if the user never picked one.
+    static var savedChoice: SpeechToTextChoice? {
+        UserDefaults.standard.string(forKey: userDefaultsKey).flatMap(SpeechToTextChoice.init(rawValue:))
+    }
+}
+
 enum BuddyTranscriptionProviderFactory {
     private enum PreferredProvider: String {
         case assemblyAI = "assemblyai"
@@ -50,6 +72,20 @@ enum BuddyTranscriptionProviderFactory {
 
         let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
         let openAIProvider = OpenAIAudioTranscriptionProvider()
+
+        // A choice made in Settings wins over Info.plist.
+        switch SpeechToTextChoice.savedChoice {
+        case .whisperKit:
+            return WhisperKitTranscriptionProvider()
+        case .assemblyAI:
+            if assemblyAIProvider.isConfigured {
+                return assemblyAIProvider
+            }
+            print("⚠️ Transcription: AssemblyAI chosen but no key saved, using Apple Speech")
+            return AppleSpeechTranscriptionProvider()
+        case nil:
+            break
+        }
 
         if preferredProvider == .appleSpeech {
             return AppleSpeechTranscriptionProvider()

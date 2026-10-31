@@ -262,7 +262,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    private let transcriptionProvider: any BuddyTranscriptionProvider
+    private var transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
@@ -285,6 +285,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         self.transcriptionProvider = transcriptionProvider
         self.transcriptionProviderDisplayName = transcriptionProvider.displayName
         super.init()
+    }
+
+    /// Picks the speech-to-text service again after a Settings change. A
+    /// session already running keeps its service; the next one uses the new one.
+    func reloadTranscriptionProvider() {
+        let transcriptionProvider = BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        self.transcriptionProvider = transcriptionProvider
+        self.transcriptionProviderDisplayName = transcriptionProvider.displayName
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
