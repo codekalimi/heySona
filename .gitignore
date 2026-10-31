@@ -6,3 +6,6 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Per-user Xcode state (window layout, breakpoints, schemes)
+xcuserdata/
